@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 import torch
+import yaml
 
 from pmq.allocation import (
     build_loss_by_layer,
@@ -13,7 +14,8 @@ from pmq.allocation import (
     validate_layer_budget,
 )
 from pmq.config import load_protocol_config
-from pmq.quantize import quantized_weights
+from pmq.quantize import _standard_linears, quantized_weights
+from pmq.gptq import TensorGPTQ
 from pmq.routing import NativeRoutingCollector
 from pmq.solver import solve_layer_ilp
 
@@ -50,13 +52,15 @@ class PmqProtocolTest(unittest.TestCase):
             config.write_text(
                 "model:\n  id: test\n  architecture: mixtral\n"
                 "dataset:\n"
-                "  calibration:\n    name: wiki\n"
+                "  factors:\n    name: c4\n"
+                "  gptq_calibration:\n    name: wiki\n"
                 "  evaluations:\n    c4:\n      name: c4\n"
                 "pmq:\n  candidate_bits: [1, 2, 3]\n"
             )
             loaded = load_protocol_config(config)
             self.assertEqual(loaded.model_path, (assets / "models" / "test").resolve())
-            self.assertEqual(loaded.calibration_path, (assets / "datasets" / "wiki").resolve())
+            self.assertEqual(loaded.factor_path, (assets / "datasets" / "c4").resolve())
+            self.assertEqual(loaded.gptq_calibration_path, (assets / "datasets" / "wiki").resolve())
             self.assertEqual(loaded.evaluation_paths["c4"], (assets / "datasets" / "c4").resolve())
 
     def test_repository_configs_do_not_reference_other_projects(self):
@@ -131,6 +135,48 @@ class PmqProtocolTest(unittest.TestCase):
         candidate = quantized_weights(source, bit=2, group_size=4)
         self.assertEqual(candidate["w1"].shape, source["w1"].shape)
         self.assertEqual(candidate["w1"].device, source["w1"].device)
+
+    def test_tensor_gptq_returns_a_finite_weight(self):
+        torch.manual_seed(0)
+        weight = torch.randn(3, 8)
+        gptq = TensorGPTQ(weight, bits=2)
+        gptq.add_batch(torch.randn(1, 12, 8))
+        quantized = gptq.quantize(group_size=4, percdamp=0.01)
+        self.assertEqual(quantized.shape, weight.shape)
+        self.assertTrue(torch.isfinite(quantized).all())
+
+    def test_protocol_configs_split_factor_and_gptq_calibration(self):
+        repository = Path(__file__).parents[1]
+        for path in (repository / "configs").glob("*.yaml"):
+            config = yaml.safe_load(path.read_text())
+            self.assertEqual(config["dataset"]["factors"]["name"], "c4_gptq_new_seed0")
+            self.assertEqual(config["dataset"]["gptq_calibration"]["name"], "wikitext2")
+            self.assertEqual(config["quantization"]["standard_linear_bit"], 4)
+            self.assertEqual(config["quantization"]["router_bit"], 16)
+
+    def test_standard_linears_exclude_expert_and_shared_projections(self):
+        class ExpertStore(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = torch.nn.Linear(4, 4)
+
+        class Mlp(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.experts = ExpertStore()
+                self.shared_expert = torch.nn.Linear(4, 4)
+                self.shared_expert_gate = torch.nn.Linear(4, 1)
+                self.gate = torch.nn.Linear(4, 2)
+
+        class Layer(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.self_attn = torch.nn.Linear(4, 4)
+                self.mlp = Mlp()
+
+        layer = Layer()
+        names = {name for name, _linear in _standard_linears(layer, layer.mlp)}
+        self.assertEqual(names, {"self_attn", "mlp.gate", "mlp.shared_expert_gate"})
 
     def test_solver_requires_gurobi_only_when_called(self):
         self.assertTrue(callable(solve_layer_ilp))

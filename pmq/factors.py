@@ -101,10 +101,10 @@ def collect_pmq_factors(protocol: ProtocolConfig, *, seed: int) -> tuple[PmqFact
     tokenizer = load_tokenizer(protocol.model_path)
     inputs = calibration_inputs(
         tokenizer,
-        protocol.calibration_path,
-        protocol.data["dataset"]["calibration"],
-        samples=int(protocol.data["calibration"]["samples"]),
-        seq_len=int(protocol.data["calibration"]["seq_len"]),
+        protocol.factor_path,
+        protocol.data["dataset"]["factors"],
+        samples=int(protocol.data["calibration"]["factors"]["samples"]),
+        seq_len=int(protocol.data["calibration"]["factors"]["seq_len"]),
         seed=seed,
     )
     model = load_model(protocol)
@@ -140,8 +140,8 @@ def collect_pmq_factors(protocol: ProtocolConfig, *, seed: int) -> tuple[PmqFact
         "model": protocol.data["model"]["name"],
         "architecture": protocol.architecture,
         "seed": int(seed),
-        "calibration_dataset": str(protocol.calibration_path),
-        "calibration_protocol": protocol.data["dataset"]["calibration"]["protocol"],
+        "factor_dataset": str(protocol.factor_path),
+        "factor_protocol": protocol.data["dataset"]["factors"]["protocol"],
         "calibration_samples": int(inputs.shape[0]),
         "calibration_seq_len": int(inputs.shape[1]),
         "candidate_bits": list(protocol.candidate_bits),

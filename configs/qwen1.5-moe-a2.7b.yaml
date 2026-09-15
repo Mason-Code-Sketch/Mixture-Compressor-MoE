@@ -7,7 +7,12 @@ model:
 
 
 dataset:
-  calibration:
+  factors:
+    name: c4_gptq_new_seed0
+    protocol: random_document_windows
+    add_special_tokens: true
+    split: validation
+  gptq_calibration:
     name: wikitext2
     protocol: corpus_windows
     add_special_tokens: true
@@ -29,12 +34,19 @@ dataset:
       max_blocks: 256
 
 calibration:
-  samples: 128
-  seq_len: 2048
+  factors:
+    samples: 128
+    seq_len: 2048
+  gptq:
+    samples: 128
+    seq_len: 2048
 
 quantization:
   group_size: 128
   candidate_quantizer: normal
+  percdamp: 0.01
+  standard_linear_bit: 4
+  router_bit: 16
 
 pmq:
   candidate_bits: [1, 2, 3]

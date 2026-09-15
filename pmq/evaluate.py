@@ -64,8 +64,8 @@ def evaluate_pmq_plan(
         model,
         adapter,
         allocation,
-        shared_bit=int(protocol.data["pmq"]["shared_expert_bit"]),
-        group_size=int(protocol.data["quantization"]["group_size"]),
+        protocol=protocol,
+        seed=seed,
     )
     quantize_seconds = perf_counter() - start
     metrics = {}

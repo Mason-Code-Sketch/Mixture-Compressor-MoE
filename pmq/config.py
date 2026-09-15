@@ -17,7 +17,8 @@ class ProtocolConfig:
     repository_root: Path
     asset_root: Path
     model_path: Path
-    calibration_path: Path
+    factor_path: Path
+    gptq_calibration_path: Path
     evaluation_paths: dict[str, Path]
 
     @property
@@ -51,12 +52,14 @@ def load_protocol_config(path: str | Path) -> ProtocolConfig:
         raise ValueError(f"configuration must be a mapping: {source_path}")
     model = data.get("model", {})
     dataset = data.get("dataset", {})
-    calibration = dataset.get("calibration", {})
+    factors = dataset.get("factors", {})
+    gptq_calibration = dataset.get("gptq_calibration", {})
     evaluations = dataset.get("evaluations", {})
     model_id = model.get("id")
     for section, value in (
         ("model.id", model_id),
-        ("dataset.calibration.name", calibration.get("name")),
+        ("dataset.factors.name", factors.get("name")),
+        ("dataset.gptq_calibration.name", gptq_calibration.get("name")),
     ):
         if not isinstance(value, str) or not value:
             raise ValueError(f"configuration is missing {section}")
@@ -79,7 +82,8 @@ def load_protocol_config(path: str | Path) -> ProtocolConfig:
         repository_root=repository_root,
         asset_root=asset_root,
         model_path=asset_root / "models" / str(model_id),
-        calibration_path=asset_root / "datasets" / str(calibration["name"]),
+        factor_path=asset_root / "datasets" / str(factors["name"]),
+        gptq_calibration_path=asset_root / "datasets" / str(gptq_calibration["name"]),
         evaluation_paths={
             key: asset_root / "datasets" / value
             for key, value in evaluation_names.items()
