@@ -3,10 +3,12 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 import yaml
 
+from utils.quantizer_moe import Quantizer
 from pmq.allocation import (
     build_loss_by_layer,
     solve_pmq_layers,
@@ -150,6 +152,24 @@ class PmqProtocolTest(unittest.TestCase):
             group_size=4, percdamp=0.01
         )
         self.assertTrue(torch.isfinite(quantized).all())
+
+    def test_pmq_mse_search_uses_fp32_for_low_bit_weights(self):
+        for dtype in (torch.bfloat16, torch.float16):
+            quantizer = Quantizer()
+            quantizer.configure(2, perchannel=True, sym=False, mse=True)
+            seen_scales = []
+            original = quantizer._quantize
+
+            def traced(values, scales, zeros, max_int):
+                seen_scales.append(scales.detach().clone())
+                return original(values, scales, zeros, max_int)
+
+            with patch.object(quantizer, "_quantize", side_effect=traced):
+                quantizer.find_params(torch.randn(4, 8, dtype=dtype), weight=True)
+            self.assertEqual(quantizer.scale.dtype, torch.float32)
+            self.assertEqual(quantizer.zero.dtype, torch.float32)
+            self.assertEqual(len(seen_scales), 101)
+            self.assertEqual(torch.unique(torch.stack(seen_scales), dim=0).shape[0], 101)
 
     def test_protocol_configs_split_factor_and_gptq_calibration(self):
         repository = Path(__file__).parents[1]
