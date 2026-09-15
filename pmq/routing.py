@@ -20,42 +20,28 @@ class NativeRoutingCollector:
 
     def __init__(self, moe_modules: dict[int, torch.nn.Module], adapter, config):
         self._adapter = adapter
+        self._config = config
         self._counts: dict[int, torch.Tensor] = {}
         self._weights: dict[int, torch.Tensor] = {}
         self._handles = []
-        experts_per_token = adapter.num_experts_per_tok(config)
         for layer, moe_module in moe_modules.items():
-            experts = adapter.num_experts(config)
+            experts = adapter.num_experts(moe_module)
+            topk = adapter.topk(moe_module, config)
             self._counts[int(layer)] = torch.zeros(experts, dtype=torch.long)
             self._weights[int(layer)] = torch.zeros(experts, dtype=torch.float64)
-            hook_module = adapter.router_hook_module(moe_module)
+            hook_module = adapter.router_module(moe_module)
             self._handles.append(
                 hook_module.register_forward_hook(
-                    self._hook(int(layer), moe_module, experts_per_token)
+                    self._hook(int(layer), moe_module, topk)
                 )
             )
 
     def _hook(self, layer: int, moe_module: torch.nn.Module, experts_per_token: int):
         def record(_module, inputs, output):
-            if isinstance(output, torch.Tensor):
-                # Mixtral exposes logits directly from its native gate Linear.
-                # Reconstruct the same normalized Top-k weights used by its MoE block.
-                scores = torch.softmax(output, dtype=torch.float32, dim=-1)
-                weights, indices = torch.topk(
-                    scores,
-                    k=experts_per_token,
-                    dim=-1,
-                )
-                weights = weights / weights.sum(dim=-1, keepdim=True)
-                state = indices, weights.to(output.dtype)
-            else:
-                state = self._adapter.scoring_route_state(moe_module, inputs, output)
-            if state is None:
-                raise RuntimeError(
-                    f"{self._adapter.name} did not expose native routing state "
-                    f"for layer {layer}"
-                )
-            indices, weights = state
+            del inputs
+            indices, weights = self._adapter.route_state(
+                moe_module, output, self._config
+            )
             if indices.shape != weights.shape or indices.shape[-1] != experts_per_token:
                 raise RuntimeError(
                     f"invalid native router state at layer {layer}: "

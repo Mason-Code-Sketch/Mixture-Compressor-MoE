@@ -1,4 +1,4 @@
-"""Configuration loading shared by the PMQ allocation bridge."""
+"""Configuration loading for standalone PMQ experiments."""
 
 from __future__ import annotations
 
@@ -14,10 +14,11 @@ class ProtocolConfig:
 
     source_path: Path
     data: dict
+    repository_root: Path
+    asset_root: Path
     model_path: Path
     calibration_path: Path
-    scoring_path: Path
-    current_project_config: Path
+    evaluation_paths: dict[str, Path]
 
     @property
     def architecture(self) -> str:
@@ -28,14 +29,22 @@ class ProtocolConfig:
         return tuple(int(bit) for bit in self.data["pmq"]["candidate_bits"])
 
 
-def _resolve_path(config_path: Path, value: str) -> Path:
-    """Resolve one repository-relative path from the configuration location."""
-    candidate = Path(value).expanduser()
-    return candidate if candidate.is_absolute() else (config_path.parent / candidate).resolve()
+def _resolve_asset_root(repository_root: Path) -> Path:
+    """Locate the shared models/ and datasets/ parent without host paths."""
+    candidates = (
+        repository_root.parent.parent,
+        repository_root.parent.parent.parent / "data",
+    )
+    for candidate in candidates:
+        if (candidate / "models").is_dir() and (candidate / "datasets").is_dir():
+            return candidate.resolve()
+    raise FileNotFoundError(
+        "PMQ requires a parent directory containing models/ and datasets/."
+    )
 
 
 def load_protocol_config(path: str | Path) -> ProtocolConfig:
-    """Load a current-project model YAML without embedding host-specific paths."""
+    """Load a standalone PMQ model YAML and resolve local assets."""
     source_path = Path(path).expanduser().resolve()
     data = yaml.safe_load(source_path.read_text())
     if not isinstance(data, dict):
@@ -43,21 +52,36 @@ def load_protocol_config(path: str | Path) -> ProtocolConfig:
     model = data.get("model", {})
     dataset = data.get("dataset", {})
     calibration = dataset.get("calibration", {})
-    scoring = dataset.get("scoring", dataset.get("evaluation", {}))
-    current_project_config = data.get("current_project_config")
+    evaluations = dataset.get("evaluations", {})
+    model_id = model.get("id")
     for section, value in (
-        ("model.path", model.get("path")),
-        ("dataset.calibration.path", calibration.get("path")),
-        ("dataset.scoring.path", scoring.get("path")),
-        ("current_project_config", current_project_config),
+        ("model.id", model_id),
+        ("dataset.calibration.name", calibration.get("name")),
     ):
         if not isinstance(value, str) or not value:
             raise ValueError(f"configuration is missing {section}")
+    if not isinstance(evaluations, dict) or not evaluations:
+        raise ValueError("configuration is missing dataset.evaluations")
+    evaluation_names = {
+        str(name): details.get("name")
+        for name, details in evaluations.items()
+        if isinstance(details, dict)
+    }
+    if set(evaluation_names) != set(evaluations) or any(
+        not isinstance(name, str) or not name for name in evaluation_names.values()
+    ):
+        raise ValueError("every dataset.evaluations entry requires a dataset name")
+    repository_root = source_path.parent.parent
+    asset_root = _resolve_asset_root(repository_root)
     return ProtocolConfig(
         source_path=source_path,
         data=data,
-        model_path=_resolve_path(source_path, model["path"]),
-        calibration_path=_resolve_path(source_path, calibration["path"]),
-        scoring_path=_resolve_path(source_path, scoring["path"]),
-        current_project_config=_resolve_path(source_path, current_project_config),
+        repository_root=repository_root,
+        asset_root=asset_root,
+        model_path=asset_root / "models" / str(model_id),
+        calibration_path=asset_root / "datasets" / str(calibration["name"]),
+        evaluation_paths={
+            key: asset_root / "datasets" / value
+            for key, value in evaluation_names.items()
+        },
     )

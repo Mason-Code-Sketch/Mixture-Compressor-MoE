@@ -1,89 +1,82 @@
-"""PPL evaluation for PMQ allocations using the current project's evaluator."""
+"""Standalone PMQ allocation materialization and perplexity evaluation."""
 
 from __future__ import annotations
 
 import json
-import os
+import math
 from pathlib import Path
 from time import perf_counter
-from types import SimpleNamespace
 
-from pmq.bridge import current_project_root, enable_current_project_imports
+import torch
+
+from pmq.adapters import PmqMoeAdapter
 from pmq.config import ProtocolConfig
+from pmq.data import evaluation_blocks
+from pmq.quantize import apply_allocation
+from pmq.runtime import input_device, load_model, load_tokenizer
 
 
-def _parse_plan(raw_plan: dict) -> dict[tuple[int, int], dict[str, int]]:
-    plan: dict[tuple[int, int], dict[str, int]] = {}
+def _parse_plan(raw_plan: dict) -> dict[tuple[int, int], int]:
+    allocation: dict[tuple[int, int], int] = {}
     for key, projections in raw_plan.items():
         layer, expert = (int(part) for part in key.split(","))
-        plan[(layer, expert)] = {
-            str(projection): int(bit) for projection, bit in projections.items()
-        }
-    return plan
+        bits = {int(bit) for bit in projections.values()}
+        if len(bits) != 1:
+            raise ValueError(f"PMQ plan must tie all projections: {key}")
+        allocation[(layer, expert)] = bits.pop()
+    return allocation
+
+
+@torch.inference_mode()
+def _ppl(model, blocks: list[torch.Tensor]) -> float:
+    device = input_device(model)
+    total_nll = 0.0
+    total_tokens = 0
+    for block in blocks:
+        input_ids = block.unsqueeze(0).to(device)
+        output = model(input_ids=input_ids, labels=input_ids, use_cache=False)
+        loss = float(output.loss)
+        if not math.isfinite(loss):
+            raise FloatingPointError("non-finite PMQ perplexity loss")
+        token_count = input_ids.size(1) - 1
+        total_nll += loss * token_count
+        total_tokens += token_count
+    if total_tokens == 0:
+        raise ValueError("PMQ evaluation has no predicted tokens")
+    return math.exp(total_nll / total_tokens)
 
 
 def evaluate_pmq_plan(
     protocol: ProtocolConfig,
     *,
     allocation_path: str | Path,
-    candidate_cache_dir: str | Path,
     seed: int,
-    eval_config: str | Path | None = None,
     output_dir: str | Path,
 ) -> Path:
-    """Evaluate a PMQ allocation through the same candidate-cache PPL path."""
-    enable_current_project_imports()
-    project_root = current_project_root()
-    os.chdir(project_root)
-    from src.experiment.evaluation import evaluate_quantization_plans
-    from src.experiment.setup import (
-        apply_evaluation_config,
-        initialize_experiment,
-        load_experiment_data,
-        model_load_kwargs_for_phase,
-    )
-
-    allocation_payload = json.loads(Path(allocation_path).read_text())
-    plan = _parse_plan(allocation_payload["allocation"])
-    args = SimpleNamespace(
-        config=str(protocol.current_project_config),
-        seed=int(seed),
-        visible_devices=None,
-        pipeline_parallel_size=None,
-        max_gpu_memory=None,
-    )
-    setup = initialize_experiment(
-        args,
-        method="pmq",
-        bits=list(protocol.candidate_bits),
-        average_bit=float(allocation_payload["average_bit"]),
-    )
-    apply_evaluation_config(
-        setup.config,
-        str(eval_config) if eval_config is not None else None,
-    )
-    timings: dict[str, float] = {}
-    prepared = load_experiment_data(
-        setup,
-        args,
-        timings,
-        include_calibration=False,
-    )
+    """Apply one PMQ allocation and compute every configured PPL metric."""
+    payload = json.loads(Path(allocation_path).read_text())
+    allocation = _parse_plan(payload["allocation"])
+    tokenizer = load_tokenizer(protocol.model_path)
+    model = load_model(protocol)
+    adapter = PmqMoeAdapter(protocol.architecture)
     start = perf_counter()
-    results, strategy_timings, elapsed = evaluate_quantization_plans(
-        model_path=setup.model_path,
-        model_load_kwargs=model_load_kwargs_for_phase(setup, "evaluation"),
-        plans={"PMQ": plan},
-        evaluation_blocks=prepared.evaluation_blocks,
-        statistics=None,
-        adapter=setup.adapter,
-        gptq_config=setup.config.get("gptq", {}),
-        candidate_cache_dir=Path(candidate_cache_dir),
-        num_gpus=setup.num_gpus,
-        pipeline_parallel_size=setup.runtime_policy.pipeline_parallel_size,
-        attention_plan={layer: 4 for layer in range(prepared.info.num_layers)},
+    apply_allocation(
+        model,
+        adapter,
+        allocation,
         shared_bit=int(protocol.data["pmq"]["shared_expert_bit"]),
+        group_size=int(protocol.data["quantization"]["group_size"]),
     )
+    quantize_seconds = perf_counter() - start
+    metrics = {}
+    for name, settings in protocol.data["dataset"]["evaluations"].items():
+        blocks = evaluation_blocks(tokenizer, protocol.evaluation_paths[name], settings)
+        evaluation_start = perf_counter()
+        metrics[name] = {
+            "ppl": _ppl(model, blocks),
+            "blocks": len(blocks),
+            "seconds": perf_counter() - evaluation_start,
+        }
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     path = output / "evaluation.json"
@@ -92,14 +85,9 @@ def evaluate_pmq_plan(
             {
                 "method": "pmq",
                 "allocation": str(Path(allocation_path).resolve()),
-                "candidate_cache_dir": str(Path(candidate_cache_dir).resolve()),
-                "evaluation_config": str(eval_config) if eval_config else None,
                 "seed": int(seed),
-                "ppl": results,
-                "load_data_seconds": timings.get("load_and_prepare_data"),
-                "evaluate_seconds": elapsed,
-                "wall_seconds": perf_counter() - start,
-                "strategy_timings": strategy_timings,
+                "quantize_seconds": quantize_seconds,
+                "ppl": metrics,
             },
             indent=2,
         )

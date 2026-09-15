@@ -1,32 +1,40 @@
 model:
   name: Qwen3-30B-A3B-Base
-  path: ../../../../data/models/Qwen3-30B-A3B-Base
+  id: Qwen3-30B-A3B-Base
   architecture: qwen3_moe
-
-current_project_config: ../../../moe-ptq/configs/model-qwen3-30b-a3b-base.yaml
+  dtype: bfloat16
+  attn_implementation: eager
 
 
 dataset:
   calibration:
-    path: ../../../../data/datasets/wikitext2
+    name: wikitext2
     protocol: corpus_windows
     add_special_tokens: true
     split: train
-  evaluation:
-    path: ../../../../data/datasets/c4_gptq_new_seed0
-    protocol: gptq_c4_new
-    split: validation
+  evaluations:
+    c4:
+      name: c4_gptq_new_seed0
+      protocol: gptq_c4_new
+      split: validation
+      text_count: 1100
+      seq_len: 2048
+      max_blocks: 256
+    wikitext2:
+      name: wikitext2
+      protocol: corpus_windows
+      add_special_tokens: true
+      split: test
+      seq_len: 2048
+      max_blocks: 256
 
 calibration:
   samples: 128
   seq_len: 2048
 
-gptq:
+quantization:
   group_size: 128
-  block_size: 128
-  percdamp: 0.01
-  mse: true
-  reproduce_mcmoe: true
+  candidate_quantizer: normal
 
 pmq:
   candidate_bits: [1, 2, 3]
