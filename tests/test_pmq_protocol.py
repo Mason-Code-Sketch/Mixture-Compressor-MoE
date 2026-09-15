@@ -8,6 +8,7 @@ from unittest.mock import patch
 import torch
 import yaml
 
+from pmq.adapters import PmqMoeAdapter
 from utils.quantizer_moe import Quantizer
 from pmq.allocation import (
     build_loss_by_layer,
@@ -176,9 +177,30 @@ class PmqProtocolTest(unittest.TestCase):
         for path in (repository / "configs").glob("*.yaml"):
             config = yaml.safe_load(path.read_text())
             self.assertEqual(config["dataset"]["factors"]["name"], "c4_gptq_new_seed0")
+            self.assertEqual(config["dataset"]["factors"]["split"], "train")
             self.assertEqual(config["dataset"]["gptq_calibration"]["name"], "wikitext2")
             self.assertEqual(config["quantization"]["standard_linear_bit"], 4)
             self.assertEqual(config["quantization"]["router_bit"], 16)
+
+    def test_deepseek_protocol_uses_native_bfloat16(self):
+        path = Path(__file__).parents[1] / "configs" / "deepseek-v2-lite.yaml"
+        self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "bfloat16")
+
+    def test_qwen_router_normalization_follows_native_config(self):
+        class Module:
+            top_k = 2
+
+        logits = torch.tensor([[2.0, 1.0, 0.0]])
+        adapter = PmqMoeAdapter("qwen2_moe")
+
+        unnormalized = type("Config", (), {"norm_topk_prob": False})()
+        indices, weights = adapter.route_state(Module(), logits, unnormalized)
+        self.assertEqual(indices.tolist(), [[0, 1]])
+        self.assertLess(weights.sum().item(), 1.0)
+
+        normalized = type("Config", (), {"norm_topk_prob": True})()
+        _indices, weights = adapter.route_state(Module(), logits, normalized)
+        self.assertTrue(torch.allclose(weights.sum(dim=-1), torch.ones(1)))
 
     def test_standard_linears_exclude_expert_and_shared_projections(self):
         class ExpertStore(torch.nn.Module):

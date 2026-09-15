@@ -57,7 +57,9 @@ class PmqMoeAdapter:
         if isinstance(output, torch.Tensor):
             scores = torch.softmax(output, dim=-1, dtype=torch.float32)
             weights, indices = torch.topk(scores, self.topk(module, model_config), dim=-1)
-            return indices, weights / weights.sum(dim=-1, keepdim=True)
+            if bool(getattr(model_config, "norm_topk_prob", False)):
+                weights = weights / weights.sum(dim=-1, keepdim=True)
+            return indices, weights
         if isinstance(output, (tuple, list)) and len(output) >= 3:
             return output[2].detach(), output[1].detach()
         raise TypeError(f"unsupported native router output: {type(output)!r}")

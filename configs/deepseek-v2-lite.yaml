@@ -2,7 +2,7 @@ model:
   name: deepseek-ai/DeepSeek-V2-Lite
   id: DeepSeek-V2-Lite
   architecture: deepseek_moe
-  dtype: float16
+  dtype: bfloat16
   attn_implementation: eager
 
 
@@ -11,7 +11,7 @@ dataset:
     name: c4_gptq_new_seed0
     protocol: random_document_windows
     add_special_tokens: true
-    split: validation
+    split: train
   gptq_calibration:
     name: wikitext2
     protocol: corpus_windows
