@@ -29,12 +29,9 @@ def _quantize_uniform(
 def _mcmoe_params(
     weight: torch.Tensor,
     bits: int,
-    *,
-    parameter_dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Solve one MC-MoE asymmetric quantization grid in FP32."""
-    values = weight.to(parameter_dtype)
-    values = values.float()
+    values = weight.float()
     if bits == 1:
         scale = values.abs().mean(dim=1) * 2
         return scale, torch.full_like(scale, 0.5)
@@ -134,7 +131,6 @@ class TensorGPTQ:
                     scale, zero = _mcmoe_params(
                         weight[:, start : start + block_size],
                         self.bits,
-                        parameter_dtype=self.weight.dtype,
                     )
                 reconstructed = _quantize_uniform(column, self.bits, scale, zero)
                 quantized[:, offset] = reconstructed

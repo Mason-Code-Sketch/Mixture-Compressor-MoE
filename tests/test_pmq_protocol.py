@@ -157,17 +157,17 @@ class PmqProtocolTest(unittest.TestCase):
         for dtype in (torch.bfloat16, torch.float16):
             with patch("pmq.gptq._quantize_uniform", wraps=_quantize_uniform) as quantize:
                 scale, zero = _mcmoe_params(
-                    torch.randn(4, 8, dtype=dtype), 2, parameter_dtype=dtype
+                    torch.randn(4, 8, dtype=dtype), 2
                 )
             self.assertEqual(scale.dtype, torch.float32)
             self.assertEqual(zero.dtype, torch.float32)
             self.assertEqual(quantize.call_count, 101)
 
-    def test_tensor_gptq_uses_the_weight_native_dtype_for_grid_solving(self):
+    def test_tensor_gptq_uses_fp32_for_grid_solving(self):
         gptq = TensorGPTQ(torch.randn(2, 4, dtype=torch.bfloat16), bits=2)
         with patch("pmq.gptq._mcmoe_params", wraps=_mcmoe_params) as solve:
             gptq.quantize(group_size=4, percdamp=0.01)
-        self.assertEqual(solve.call_args.kwargs["parameter_dtype"], torch.bfloat16)
+        self.assertEqual(solve.call_args.args[0].dtype, torch.float32)
 
     def test_protocol_configs_split_factor_and_gptq_calibration(self):
         repository = Path(__file__).parents[1]
