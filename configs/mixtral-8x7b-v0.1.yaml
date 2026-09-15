@@ -1,0 +1,39 @@
+model:
+  name: Mixtral-8x7B-v0.1
+  path: ../../../../data/models/Mixtral-8x7B-v0.1
+  architecture: mixtral
+
+current_project_config: ../../../moe-ptq/configs/model-mixtral-8x7b-v0.1.yaml
+
+
+dataset:
+  calibration:
+    path: ../../../../data/datasets/wikitext2
+    protocol: corpus_windows
+    add_special_tokens: true
+    split: train
+  evaluation:
+    path: ../../../../data/datasets/c4_gptq_new_seed0
+    protocol: gptq_c4_new
+    split: validation
+
+calibration:
+  samples: 128
+  seq_len: 2048
+
+gptq:
+  group_size: 128
+  block_size: 128
+  percdamp: 0.01
+  mse: true
+  reproduce_mcmoe: true
+
+pmq:
+  candidate_bits: [1, 2, 3]
+  shared_expert_bit: 3
+  alpha: 1.0
+  beta: 1.5
+  normalize_factors: true
+  scale_factor: 1000.0
+  ilp_backend: highs
+  output_dir: results/mixtral-8x7b-v0.1
