@@ -136,17 +136,21 @@ def _routed_inputs(
 
 
 def _expert_down_inputs(
-    weights: Mapping[str, torch.Tensor], input_batches: list[torch.Tensor], *, mixtral: bool
+    weights: Mapping[str, torch.Tensor],
+    input_batches: list[torch.Tensor],
+    *,
+    mixtral: bool,
+    activation,
 ) -> list[torch.Tensor]:
     activations = []
     device = next(iter(weights.values())).device
     for values_cpu in input_batches:
         values = values_cpu.to(device)
         if mixtral:
-            gate = functional.silu(functional.linear(values, weights["w1"]))
+            gate = activation(functional.linear(values, weights["w1"]))
             up = functional.linear(values, weights["w3"])
         else:
-            gate = functional.silu(functional.linear(values, weights["gate_proj"]))
+            gate = activation(functional.linear(values, weights["gate_proj"]))
             up = functional.linear(values, weights["up_proj"])
         activations.append((gate * up).detach().cpu())
     return activations
@@ -164,28 +168,51 @@ def _quantize_expert(
     percdamp: float,
 ) -> None:
     inputs = _routed_inputs(module, adapter, hidden_batches, model_config, expert)
-    if not inputs:
-        raise ValueError(f"PMQ GPTQ found no calibration tokens for expert {expert}")
-    original = {
-        name: value.detach().clone()
-        for name, value in adapter.expert_weights(module, expert).items()
-    }
     mixtral = adapter.architecture == "mixtral"
-    gate_name, up_name, down_name = (
-        ("w1", "w3", "w2") if mixtral else ("gate_proj", "up_proj", "down_proj")
+    if mixtral:
+        original = {
+            name: value.detach().clone()
+            for name, value in adapter.expert_weights(module, expert).items()
+        }
+        quantized = dict(original)
+        quantized["w1"] = _quantize_matrix(
+            original["w1"], inputs, bit=bit, group_size=group_size, percdamp=percdamp
+        )
+        quantized["w3"] = _quantize_matrix(
+            original["w3"], inputs, bit=bit, group_size=group_size, percdamp=percdamp
+        )
+        down_inputs = _expert_down_inputs(
+            quantized,
+            inputs,
+            mixtral=True,
+            activation=module.experts[expert].act_fn,
+        )
+        quantized["w2"] = _quantize_matrix(
+            original["w2"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp
+        )
+        adapter.set_expert_weights(module, expert, quantized)
+        return
+
+    original_gate_up = module.experts.gate_up_proj[expert].detach().clone()
+    original_down = module.experts.down_proj[expert].detach().clone()
+    quantized_gate_up = _quantize_matrix(
+        original_gate_up, inputs, bit=bit, group_size=group_size, percdamp=percdamp
     )
-    quantized = dict(original)
-    quantized[gate_name] = _quantize_matrix(
-        original[gate_name], inputs, bit=bit, group_size=group_size, percdamp=percdamp
+    gate, up = quantized_gate_up.chunk(2, dim=0)
+    down_inputs = _expert_down_inputs(
+        {"gate_proj": gate, "up_proj": up},
+        inputs,
+        mixtral=False,
+        activation=module.experts.act_fn,
     )
-    quantized[up_name] = _quantize_matrix(
-        original[up_name], inputs, bit=bit, group_size=group_size, percdamp=percdamp
+    quantized_down = _quantize_matrix(
+        original_down, down_inputs, bit=bit, group_size=group_size, percdamp=percdamp
     )
-    down_inputs = _expert_down_inputs(quantized, inputs, mixtral=mixtral)
-    quantized[down_name] = _quantize_matrix(
-        original[down_name], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp
+    adapter.set_expert_weights(
+        module,
+        expert,
+        {"gate_proj": gate, "up_proj": up, "down_proj": quantized_down},
     )
-    adapter.set_expert_weights(module, expert, quantized)
 
 
 def _quantize_shared_expert(
@@ -207,7 +234,13 @@ def _quantize_shared_expert(
     quantized["up_proj"] = _quantize_matrix(
         original["up_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp
     )
-    down_inputs = _expert_down_inputs(quantized, hidden_batches, mixtral=False)
+    shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
+    down_inputs = _expert_down_inputs(
+        quantized,
+        hidden_batches,
+        mixtral=False,
+        activation=getattr(shared, "act_fn", functional.silu),
+    )
     quantized["down_proj"] = _quantize_matrix(
         original["down_proj"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp
     )

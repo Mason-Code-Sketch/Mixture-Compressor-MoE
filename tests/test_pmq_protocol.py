@@ -145,6 +145,12 @@ class PmqProtocolTest(unittest.TestCase):
         self.assertEqual(quantized.shape, weight.shape)
         self.assertTrue(torch.isfinite(quantized).all())
 
+    def test_tensor_gptq_handles_an_unselected_expert(self):
+        quantized = TensorGPTQ(torch.randn(2, 4), bits=2).quantize(
+            group_size=4, percdamp=0.01
+        )
+        self.assertTrue(torch.isfinite(quantized).all())
+
     def test_protocol_configs_split_factor_and_gptq_calibration(self):
         repository = Path(__file__).parents[1]
         for path in (repository / "configs").glob("*.yaml"):

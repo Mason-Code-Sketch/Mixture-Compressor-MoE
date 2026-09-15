@@ -42,8 +42,6 @@ class TensorGPTQ:
     @torch.no_grad()
     def quantize(self, *, group_size: int, percdamp: float) -> torch.Tensor:
         """Quantize the tensor with the established PMQ GPTQ arithmetic."""
-        if self.samples == 0:
-            raise ValueError("GPTQ cannot quantize a weight without calibration inputs")
         weight = self.weight.float().clone()
         hessian = self.hessian
         self.hessian = None
