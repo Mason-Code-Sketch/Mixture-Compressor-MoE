@@ -2,7 +2,7 @@ model:
   name: Mixtral-8x7B-v0.1
   id: Mixtral-8x7B-v0.1
   architecture: mixtral
-  dtype: float16
+  dtype: bfloat16
   attn_implementation: eager
 
 

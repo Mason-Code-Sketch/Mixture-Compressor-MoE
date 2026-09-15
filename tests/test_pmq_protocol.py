@@ -9,7 +9,6 @@ import torch
 import yaml
 
 from pmq.adapters import PmqMoeAdapter
-from utils.quantizer_moe import Quantizer
 from pmq.allocation import (
     build_loss_by_layer,
     solve_pmq_layers,
@@ -18,7 +17,7 @@ from pmq.allocation import (
 )
 from pmq.config import load_protocol_config
 from pmq.quantize import _standard_linears, quantized_weights
-from pmq.gptq import TensorGPTQ
+from pmq.gptq import TensorGPTQ, _mcmoe_params, _quantize_uniform
 from pmq.routing import NativeRoutingCollector
 from pmq.solver import solve_layer_ilp
 
@@ -156,21 +155,19 @@ class PmqProtocolTest(unittest.TestCase):
 
     def test_pmq_mse_search_uses_fp32_for_low_bit_weights(self):
         for dtype in (torch.bfloat16, torch.float16):
-            quantizer = Quantizer()
-            quantizer.configure(2, perchannel=True, sym=False, mse=True)
-            seen_scales = []
-            original = quantizer._quantize
+            with patch("pmq.gptq._quantize_uniform", wraps=_quantize_uniform) as quantize:
+                scale, zero = _mcmoe_params(
+                    torch.randn(4, 8, dtype=dtype), 2, parameter_dtype=dtype
+                )
+            self.assertEqual(scale.dtype, torch.float32)
+            self.assertEqual(zero.dtype, torch.float32)
+            self.assertEqual(quantize.call_count, 101)
 
-            def traced(values, scales, zeros, max_int):
-                seen_scales.append(scales.detach().clone())
-                return original(values, scales, zeros, max_int)
-
-            with patch.object(quantizer, "_quantize", side_effect=traced):
-                quantizer.find_params(torch.randn(4, 8, dtype=dtype), weight=True)
-            self.assertEqual(quantizer.scale.dtype, torch.float32)
-            self.assertEqual(quantizer.zero.dtype, torch.float32)
-            self.assertEqual(len(seen_scales), 101)
-            self.assertEqual(torch.unique(torch.stack(seen_scales), dim=0).shape[0], 101)
+    def test_tensor_gptq_uses_the_weight_native_dtype_for_grid_solving(self):
+        gptq = TensorGPTQ(torch.randn(2, 4, dtype=torch.bfloat16), bits=2)
+        with patch("pmq.gptq._mcmoe_params", wraps=_mcmoe_params) as solve:
+            gptq.quantize(group_size=4, percdamp=0.01)
+        self.assertEqual(solve.call_args.kwargs["parameter_dtype"], torch.bfloat16)
 
     def test_protocol_configs_split_factor_and_gptq_calibration(self):
         repository = Path(__file__).parents[1]
@@ -184,6 +181,10 @@ class PmqProtocolTest(unittest.TestCase):
 
     def test_deepseek_protocol_uses_native_bfloat16(self):
         path = Path(__file__).parents[1] / "configs" / "deepseek-v2-lite.yaml"
+        self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "bfloat16")
+
+    def test_mixtral_protocol_uses_native_bfloat16(self):
+        path = Path(__file__).parents[1] / "configs" / "mixtral-8x7b-v0.1.yaml"
         self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "bfloat16")
 
     def test_qwen_router_normalization_follows_native_config(self):
