@@ -123,10 +123,6 @@ class Quantizer(nn.Module):
         shape = w.shape
 
         x = w.clone().to(torch.float16)
-        if self.mse and self.maxq != 1:
-            # MSE scale selection needs FP32 candidates. FP16 input arithmetic
-            # merges much of the 101-point shrink grid before scoring it.
-            x = x.float()
 
         if self.maxq == 1:
             scale, zero = binary_scale(x)
@@ -159,7 +155,7 @@ class Quantizer(nn.Module):
                         x = x.t()
             else:
                 x = x.flatten().unsqueeze(0)
-            tmp = torch.zeros(x.shape[0], device=dev, dtype=x.dtype)
+            tmp = torch.zeros(x.shape[0], device=dev, dtype=torch.float16)
             xmin = torch.minimum(x.min(1)[0], tmp)
             xmax = torch.maximum(x.max(1)[0], tmp)
 
@@ -175,13 +171,13 @@ class Quantizer(nn.Module):
             else:
                 scale = (xmax - xmin) / maxq
                 if self.sym:
-                    zero = torch.full_like(scale, (maxq + 1) / 2, dtype=x.dtype)
+                    zero = torch.full_like(scale, (maxq + 1) / 2, dtype=torch.float16)
                 else:
                     zero = -xmin / scale
             tau_range = 0.1
             tau_n = 50
             # best = torch.zeros_like(x[:, 0], device=dev)
-            best = torch.full([x.shape[0]], float('inf'), device=dev, dtype=x.dtype)
+            best = torch.full([x.shape[0]], float('inf'), device=dev, dtype=torch.float16)
             # _p = torch.ones([x.shape[0]], dtype=torch.float16)
             p_left = 1 - tau_range
             p_right = 1 + tau_range
