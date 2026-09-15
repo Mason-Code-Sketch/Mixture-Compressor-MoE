@@ -73,9 +73,9 @@ def evaluation_blocks(tokenizer, dataset_path, settings: Mapping[str, object]) -
         raise ValueError(f"unsupported PMQ evaluation protocol: {protocol}")
     seq_len = int(settings["seq_len"])
     max_blocks = settings.get("max_blocks")
+    complete_tokens = (tokens.numel() // seq_len) * seq_len
     blocks = [
         tokens[start : start + seq_len].clone()
-        for start in range(0, tokens.numel(), seq_len)
-        if tokens[start : start + seq_len].numel() >= 2
+        for start in range(0, complete_tokens, seq_len)
     ]
     return blocks if max_blocks is None else blocks[: int(max_blocks)]

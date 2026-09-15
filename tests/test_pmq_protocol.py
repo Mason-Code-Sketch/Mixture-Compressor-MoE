@@ -16,6 +16,7 @@ from pmq.allocation import (
     validate_layer_budget,
 )
 from pmq.config import load_protocol_config
+from pmq.data import evaluation_blocks
 from pmq.quantize import _standard_linears, quantized_weights
 from pmq.gptq import TensorGPTQ, _mcmoe_params, _quantize_uniform
 from pmq.routing import NativeRoutingCollector
@@ -178,6 +179,21 @@ class PmqProtocolTest(unittest.TestCase):
             self.assertEqual(config["dataset"]["gptq_calibration"]["name"], "wikitext2")
             self.assertEqual(config["quantization"]["standard_linear_bit"], 4)
             self.assertEqual(config["quantization"]["router_bit"], 16)
+
+    def test_evaluation_blocks_drop_incomplete_tail(self):
+        class Tokenizer:
+            def __call__(self, _text, **_kwargs):
+                return type("Encoded", (), {"input_ids": torch.arange(4099).unsqueeze(0)})()
+
+        dataset = {"test": {"text": ["unused"]}}
+        with patch("pmq.data.load_from_disk", return_value=dataset):
+            blocks = evaluation_blocks(
+                Tokenizer(),
+                "unused",
+                {"split": "test", "seq_len": 2048, "protocol": "corpus_windows"},
+            )
+
+        self.assertEqual([block.numel() for block in blocks], [2048, 2048])
 
     def test_deepseek_protocol_uses_native_bfloat16(self):
         path = Path(__file__).parents[1] / "configs" / "deepseek-v2-lite.yaml"
