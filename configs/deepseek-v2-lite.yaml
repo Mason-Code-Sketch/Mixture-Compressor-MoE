@@ -56,4 +56,5 @@ pmq:
   normalize_factors: true
   scale_factor: 1000.0
   ilp_backend: highs
+  budget_policy: balanced_exact
   output_dir: results/deepseek-v2-lite

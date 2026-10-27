@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import torch
+import yaml
 
 from pmq.allocation import solve_pmq_layers, describe_budget
 from pmq.factors import PmqFactors, save_pmq_factors
@@ -29,10 +30,14 @@ class BudgetArtifactTest(unittest.TestCase):
     def test_all_six_deepseek_budgets_are_exact(self):
         losses = {layer: {expert: {1: 10. * (expert + 1), 2: 3. * (expert + 1), 3: float(expert + 1)}
                   for expert in range(64)} for layer in range(1, 27)}
+        configuration = yaml.safe_load((Path(__file__).resolve().parents[1] /
+                                        "configs/deepseek-v2-lite.yaml").read_text())
+        policy = configuration["pmq"]["budget_policy"]
+        self.assertEqual(policy, "balanced_exact")
         started = time.perf_counter()
         for bit in (1.25, 1.5, 1.75, 2., 2.25, 2.5):
             assignments = solve_pmq_layers(losses, average_bit=bit, shared_units=2, shared_bit=3,
-                                           budget_policy="balanced_exact")
+                                           budget_policy=policy)
             report = describe_budget(assignments, shared_units=2, shared_bit=3,
                                       requested_average_bit=bit, budget_policy="balanced_exact")
             self.assertEqual(report["actual_average_bit"], bit)
@@ -43,6 +48,8 @@ class BudgetArtifactTest(unittest.TestCase):
                 self.assertIn(2, assigned); self.assertIn(3, assigned)
             if bit in (1.25, 1.75, 2.25):
                 self.assertEqual(budgets.count(max(budgets)), 13)
+                self.assertEqual([int(layer) for layer, value in report["layer_total_budgets"].items()
+                                  if value == max(budgets)], list(range(1, 14)))
         print('CPU_SIX_BUDGET_TEST_SECONDS',time.perf_counter() - started)
 
     def test_native_pkls_and_corruption_detection(self):

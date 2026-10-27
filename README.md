@@ -322,18 +322,25 @@ attention scale retained when needed. Both list-based and fused expert layouts a
 supported. GPTQ scales/zeros are retained in FP32 so packing does not introduce a
 second quantization or alter the materialized weights.
 
-Fractional per-layer budgets require an explicit budget policy. `strict` retains
-integer per-layer targets. `floor` keeps the original per-layer upper-bound problem
-and records the lower actual precision. `balanced_exact` solves floor/ceiling layer
-budgets exactly and assigns the required extra units to layers with the largest
-PMQ-objective improvement. This last rule is an explicit architecture budget
-extension; it is recorded in the allocation metadata.
+The DeepSeek-V2-Lite configuration uses `budget_policy: balanced_exact`. It
+solves floor/ceiling layer budgets exactly and assigns the required extra units
+to layers with the largest PMQ-objective improvement, breaking equal-gain ties
+by ascending layer index. With 26 MoE layers and 66 parameter-equivalent expert
+units per layer, the 1.25-bit setting assigns total budgets of 82 to 13 layers
+and 83 to 13 layers, including the fixed shared-expert cost. The 1.75/2.25-bit
+settings similarly use 115/116 and 148/149. All six settings match their requested
+expert average bit exactly. Allocation metadata records actual average bit,
+per-layer budgets, policy, and allocation time.
+
+This rule is an explicit architecture budget extension. `strict` retains integer
+per-layer targets, while `floor` keeps per-layer upper bounds and records the lower
+actual precision. Other configurations retain their existing policy.
 
 `pmq_queue.py --configs ... --dry-run` prints the planned native commands without
 running them. An explicitly invoked queue reuses verified artifacts, runs all PPL
 settings before seven-task evaluations for each model, and stops on errors.
-Partial files are retained for diagnosis. Set the budget policy explicitly before
-running DeepSeek fractional settings.
+Partial files are retained for diagnosis. The queue and individual allocation
+phase both use the DeepSeek configuration policy without a command-line override.
 
 Seven-task evaluation uses `lm_eval==0.4.13`, the seven comparison tasks, zero-shot,
 no limit/chat template, and explicit `add_bos_token=False`; MMLU is counted once.
