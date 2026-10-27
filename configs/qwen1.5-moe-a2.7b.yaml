@@ -4,6 +4,10 @@ model:
   architecture: qwen2_moe
   dtype: bfloat16
   attn_implementation: eager
+  max_memory:
+    0: 16GiB
+    1: 16GiB
+    cpu: 0GiB
 
 
 dataset:
