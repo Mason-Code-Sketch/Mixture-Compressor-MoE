@@ -284,3 +284,61 @@ We use the [EleutherAI LM Harness](https://github.com/EleutherAI/lm-evaluation-h
 
 [Half-Quadratic Quantization (HQQ)](https://github.com/mobiusml/hqq)
 
+
+
+## Native PMQ adapter on host 82
+
+The `pmq-82` branch extends the original static PMQ method to DeepSeek-V2-Lite
+and Qwen1.5-MoE-A2.7B. It keeps the original significance-weighted expert objective,
+1/2/3-bit candidates, and per-layer middle/high-bit constraints. It does not add
+router fine-tuning or online dynamic pruning.
+
+Run commands from the `PMQ` worktree using the environment in the main checkout:
+
+```sh
+/root/moe-ptq-experiment/third-party/Mixture-Compressor-MoE/.venv/bin/python pmq_runner.py --help
+```
+
+Phases are explicit: `factors`, `allocate`, `quantize`, `ppl`, and `zeroshot`.
+`evaluate` retains the combined quantization-plus-PPL entry point. A phase starts
+only when invoked. The default output root remains the model's YAML `output_dir`;
+`--out-dir` and the original-style `--saving-path` select other output directories.
+
+The original artifact forms are preserved:
+
+* `experts_act_frequency.pkl`, `experts_act_weight.pkl`, `experts_quant_loss.pkl`;
+* `experts_mixture_bit_selection/experts_mixture_bitwidth_combination_avg<bit>bit.pkl`,
+  containing the original layer -> expert -> integer-bit mapping;
+* a model directory containing `qmodel.pt`, `config.json`, and tokenizer files.
+
+The `avg` allocation filename identifies the requested average for architectures
+with different expert counts. JSON sidecars record checksums, source/configuration
+identity, actual parameter-weighted expert precision, and completion. They do not
+replace the original PKLs or packed model. Existing outputs are not overwritten.
+`inference.load_quantized_model` also recognizes the adapted checkpoint format.
+
+DeepSeek is loaded through native Transformers experts, with the original YaRN
+attention scale retained when needed. Both list-based and fused expert layouts are
+supported. GPTQ scales/zeros are retained in FP32 so packing does not introduce a
+second quantization or alter the materialized weights.
+
+Fractional per-layer budgets require an explicit budget policy. `strict` retains
+integer per-layer targets. `floor` keeps the original per-layer upper-bound problem
+and records the lower actual precision. `balanced_exact` solves floor/ceiling layer
+budgets exactly and assigns the required extra units to layers with the largest
+PMQ-objective improvement. This last rule is an explicit architecture budget
+extension; it is recorded in the allocation metadata.
+
+`pmq_queue.py --configs ... --dry-run` prints the planned native commands without
+running them. An explicitly invoked queue reuses verified artifacts, runs all PPL
+settings before seven-task evaluations for each model, and stops on errors.
+Partial files are retained for diagnosis. Set the budget policy explicitly before
+running DeepSeek fractional settings.
+
+Seven-task evaluation uses `lm_eval==0.4.13`, the seven comparison tasks, zero-shot,
+no limit/chat template, and explicit `add_bos_token=False`; MMLU is counted once.
+
+Each phase writes its console/progress log and resource samples under `logs/`.
+RAM RSS, available system memory, system swap, physical-GPU usage and process CUDA
+allocation/reservation are distinguished. Sampling maxima are labelled as sampled
+values. The monitor observes resources without changing limits or killing jobs.

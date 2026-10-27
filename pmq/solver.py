@@ -14,6 +14,7 @@ def solve_layer_ilp(
     candidate_bits: Sequence[int] = (1, 2, 3),
     require_mid_and_high: bool = True,
     backend: str = "highs",
+    exact_budget: bool = False,
 ) -> dict[int, int]:
     """Solve PMQ's original one-bit-per-expert layer objective.
 
@@ -35,16 +36,16 @@ def solve_layer_ilp(
 
     if backend == "gurobi":
         return _solve_with_gurobi(
-            loss_by_expert, experts, bits, bit_budget, require_mid_and_high
+            loss_by_expert, experts, bits, bit_budget, require_mid_and_high, exact_budget
         )
     if backend == "highs":
         return _solve_with_highs(
-            loss_by_expert, experts, bits, bit_budget, require_mid_and_high
+            loss_by_expert, experts, bits, bit_budget, require_mid_and_high, exact_budget
         )
     raise ValueError("PMQ backend must be 'gurobi' or 'highs'")
 
 
-def _solve_with_gurobi(loss_by_expert, experts, bits, bit_budget, require_mid_and_high):
+def _solve_with_gurobi(loss_by_expert, experts, bits, bit_budget, require_mid_and_high, exact_budget):
     try:
         import gurobipy as gp
     except ImportError as error:
@@ -59,10 +60,8 @@ def _solve_with_gurobi(loss_by_expert, experts, bits, bit_budget, require_mid_an
         ),
         gp.GRB.MINIMIZE,
     )
-    model.addConstr(
-        gp.quicksum(bit * choices[expert, bit] for expert in experts for bit in bits)
-        <= int(bit_budget),
-    )
+    budget = gp.quicksum(bit * choices[expert, bit] for expert in experts for bit in bits)
+    model.addConstr(budget == int(bit_budget) if exact_budget else budget <= int(bit_budget))
     for expert in experts:
         model.addConstr(gp.quicksum(choices[expert, bit] for bit in bits) == 1)
     if require_mid_and_high and len(bits) >= 3:
@@ -77,7 +76,7 @@ def _solve_with_gurobi(loss_by_expert, experts, bits, bit_budget, require_mid_an
     }
 
 
-def _solve_with_highs(loss_by_expert, experts, bits, bit_budget, require_mid_and_high):
+def _solve_with_highs(loss_by_expert, experts, bits, bit_budget, require_mid_and_high, exact_budget):
     try:
         from scipy.optimize import Bounds, LinearConstraint, milp
     except ImportError as error:
@@ -91,7 +90,7 @@ def _solve_with_highs(loss_by_expert, experts, bits, bit_budget, require_mid_and
     rows, lower, upper = [], [], []
     budget = np.asarray([bit for _expert, bit in variables], dtype=np.float64)
     rows.append(budget)
-    lower.append(-np.inf)
+    lower.append(float(bit_budget) if exact_budget else -np.inf)
     upper.append(float(bit_budget))
     for expert in experts:
         row = np.zeros(len(variables), dtype=np.float64)

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import torch
 
+from pmq.artifacts import provenance, sha256_file, write_json, write_pickle
+from pmq.monitor import LOGGER, progress
 from pmq.adapters import PmqMoeAdapter
 from pmq.config import ProtocolConfig
 from pmq.data import calibration_inputs
@@ -92,7 +94,10 @@ def _candidate_loss_for_layer(
                 by_bit[int(bit)] = float(loss)
         finally:
             adapter.set_expert_weights(module, expert, original)
+        if not all(torch.isfinite(torch.tensor(value)) and value >= 0 for value in by_bit.values()):
+            raise FloatingPointError(f"invalid PMQ candidate loss for expert {expert}")
         losses[expert] = by_bit
+        progress("FACTOR_EXPERT", expert + 1, adapter.num_experts(module))
     return losses
 
 
@@ -122,7 +127,8 @@ def collect_pmq_factors(protocol: ProtocolConfig, *, seed: int) -> tuple[PmqFact
         raise
 
     candidate_loss: dict[int, dict[int, dict[int, float]]] = {}
-    for layer, module in sorted(modules.items()):
+    for position, (layer, module) in enumerate(sorted(modules.items()), 1):
+        LOGGER.info("FACTOR_LAYER_START layer=%s position=%s total=%s", layer, position, len(modules))
         layer_inputs, layer_outputs = _capture_layer_io(model, module, inputs, device)
         candidate_loss[layer] = _candidate_loss_for_layer(
             module=module,
@@ -133,10 +139,12 @@ def collect_pmq_factors(protocol: ProtocolConfig, *, seed: int) -> tuple[PmqFact
             group_size=int(protocol.data["quantization"]["group_size"]),
         )
         del layer_inputs, layer_outputs
+        progress("FACTOR_LAYER_COMPLETE", position, len(modules), layer=layer)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
     metadata = {
+        "provenance": provenance(protocol, seed=seed),
         "model": protocol.data["model"]["name"],
         "architecture": protocol.architecture,
         "seed": int(seed),
@@ -152,17 +160,20 @@ def collect_pmq_factors(protocol: ProtocolConfig, *, seed: int) -> tuple[PmqFact
 
 
 def save_pmq_factors(output_dir: str | Path, factors: PmqFactors, metadata: dict) -> Path:
-    """Persist PMQ factors under the PMQ result directory."""
+    """Keep the original three factor PKLs; provenance is an independent sidecar."""
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "pmq_factors.pt"
-    torch.save(
-        {
-            "selected_count": factors.routing.selected_count,
-            "selected_weight": factors.routing.selected_weight,
-            "candidate_loss": factors.candidate_loss,
-            "metadata": metadata,
-        },
-        path,
-    )
-    return path
+    payloads = {
+        "experts_act_frequency.pkl": factors.routing.selected_count,
+        "experts_act_weight.pkl": factors.routing.selected_weight,
+        "experts_quant_loss.pkl": factors.candidate_loss,
+    }
+    if any((directory / name).exists() for name in [*payloads, "factors_complete.json"]):
+        raise FileExistsError(f"PMQ factors already exist in {directory}")
+    for name, payload in payloads.items():
+        write_pickle(directory / name, payload)
+    write_json(directory / "factors_complete.json", {
+        "status": "complete", "metadata": metadata,
+        "files": {name: sha256_file(directory / name) for name in payloads},
+    })
+    return directory

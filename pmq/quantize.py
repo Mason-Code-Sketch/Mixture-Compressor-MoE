@@ -11,6 +11,7 @@ from pmq.adapters import PmqMoeAdapter
 from pmq.data import calibration_inputs
 from pmq.gptq import TensorGPTQ
 from pmq.runtime import input_device, load_tokenizer
+from pmq.monitor import LOGGER, progress
 from utils.normal_quantizer import normal_quantize
 
 
@@ -84,13 +85,20 @@ def _quantize_matrix(
     bit: int,
     group_size: int,
     percdamp: float,
+    states=None,
+    name=None,
 ) -> torch.Tensor:
     if int(bit) >= 16:
         return weight.detach().clone()
     gptq = TensorGPTQ(weight, bits=int(bit))
     for inputs in input_batches:
         gptq.add_batch(inputs.to(weight.device, dtype=weight.dtype))
-    return gptq.quantize(group_size=group_size, percdamp=percdamp)
+    result = gptq.quantize(group_size=group_size, percdamp=percdamp)
+    if states is not None:
+        if name in states:
+            raise ValueError(f"duplicate packed projection: {name}")
+        states[name] = gptq.packed_state
+    return result
 
 
 def _standard_linears(layer, moe_module: torch.nn.Module | None) -> list[tuple[str, torch.nn.Linear]]:
@@ -128,8 +136,8 @@ def _routed_inputs(
         indices, _weights = adapter.route_state(
             module, adapter.router_module(module)(hidden), model_config
         )
-        selected = (indices == int(expert)).any(dim=-1)
-        values = hidden[selected]
+        selected = (indices.reshape(-1, indices.shape[-1]) == int(expert)).any(dim=-1)
+        values = hidden.reshape(-1, hidden.shape[-1])[selected]
         if values.numel():
             routed.append(values.unsqueeze(0).detach().cpu())
     return routed
@@ -166,6 +174,8 @@ def _quantize_expert(
     bit: int,
     group_size: int,
     percdamp: float,
+    states=None,
+    prefix="",
 ) -> None:
     inputs = _routed_inputs(module, adapter, hidden_batches, model_config, expert)
     mixtral = adapter.architecture == "mixtral"
@@ -176,10 +186,12 @@ def _quantize_expert(
         }
         quantized = dict(original)
         quantized["w1"] = _quantize_matrix(
-            original["w1"], inputs, bit=bit, group_size=group_size, percdamp=percdamp
+            original["w1"], inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+            states=states, name=f"{prefix}.w1"
         )
         quantized["w3"] = _quantize_matrix(
-            original["w3"], inputs, bit=bit, group_size=group_size, percdamp=percdamp
+            original["w3"], inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+            states=states, name=f"{prefix}.w3"
         )
         down_inputs = _expert_down_inputs(
             quantized,
@@ -188,7 +200,28 @@ def _quantize_expert(
             activation=module.experts[expert].act_fn,
         )
         quantized["w2"] = _quantize_matrix(
-            original["w2"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp
+            original["w2"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+            states=states, name=f"{prefix}.w2"
+        )
+        adapter.set_expert_weights(module, expert, quantized)
+        return
+
+    if isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
+        original = {name: value.detach().clone()
+                    for name, value in adapter.expert_weights(module, expert).items()}
+        quantized = dict(original)
+        for name in ("gate_proj", "up_proj"):
+            quantized[name] = _quantize_matrix(
+                original[name], inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+                states=states, name=f"{prefix}.{name}"
+            )
+        down_inputs = _expert_down_inputs(
+            quantized, inputs, mixtral=False, activation=module.experts[expert].act_fn
+        )
+        quantized["down_proj"] = _quantize_matrix(
+            original["down_proj"], down_inputs, bit=bit,
+            group_size=group_size, percdamp=percdamp,
+            states=states, name=f"{prefix}.down_proj"
         )
         adapter.set_expert_weights(module, expert, quantized)
         return
@@ -196,7 +229,8 @@ def _quantize_expert(
     original_gate_up = module.experts.gate_up_proj[expert].detach().clone()
     original_down = module.experts.down_proj[expert].detach().clone()
     quantized_gate_up = _quantize_matrix(
-        original_gate_up, inputs, bit=bit, group_size=group_size, percdamp=percdamp
+        original_gate_up, inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+        states=states, name=f"{prefix}.gate_up_proj"
     )
     gate, up = quantized_gate_up.chunk(2, dim=0)
     down_inputs = _expert_down_inputs(
@@ -206,7 +240,8 @@ def _quantize_expert(
         activation=module.experts.act_fn,
     )
     quantized_down = _quantize_matrix(
-        original_down, down_inputs, bit=bit, group_size=group_size, percdamp=percdamp
+        original_down, down_inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+        states=states, name=f"{prefix}.down_proj"
     )
     adapter.set_expert_weights(
         module,
@@ -223,16 +258,20 @@ def _quantize_shared_expert(
     bit: int,
     group_size: int,
     percdamp: float,
+    states=None,
+    prefix="",
 ) -> None:
     original = adapter.shared_weights(module)
     if not original:
         return
     quantized = dict(original)
     quantized["gate_proj"] = _quantize_matrix(
-        original["gate_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp
+        original["gate_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp,
+        states=states, name=f"{prefix}.gate_proj"
     )
     quantized["up_proj"] = _quantize_matrix(
-        original["up_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp
+        original["up_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp,
+        states=states, name=f"{prefix}.up_proj"
     )
     shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
     down_inputs = _expert_down_inputs(
@@ -242,7 +281,8 @@ def _quantize_shared_expert(
         activation=getattr(shared, "act_fn", functional.silu),
     )
     quantized["down_proj"] = _quantize_matrix(
-        original["down_proj"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp
+        original["down_proj"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+        states=states, name=f"{prefix}.down_proj"
     )
     adapter.set_shared_weights(module, quantized)
 
@@ -274,7 +314,11 @@ def apply_allocation(
     shared_bit = int(protocol.data["pmq"]["shared_expert_bit"])
     device = input_device(model)
     modules = adapter.collect_moe_modules(model)
-    for layer_index, layer in enumerate(_decoder_layers(model)):
+    module_names = {id(module): name for name, module in model.named_modules()}
+    states = {}
+    layers = _decoder_layers(model)
+    for layer_index, layer in enumerate(layers):
+        LOGGER.info("QUANTIZE_LAYER_START layer=%s total=%s", layer_index, len(layers))
         module = modules.get(layer_index)
         router = adapter.router_module(module) if module is not None else None
         standard_named_linears = _standard_linears(layer, module)
@@ -291,6 +335,7 @@ def apply_allocation(
                     bit=bit,
                     group_size=group_size,
                     percdamp=percdamp,
+                    states=states, name=f"model.layers.{layer_index}.{name}",
                 )
             )
         del standard_inputs
@@ -301,6 +346,7 @@ def apply_allocation(
             key = (int(layer_index), expert)
             if key not in allocation:
                 raise KeyError(f"PMQ allocation omits routed expert {key}")
+            progress("QUANTIZE_EXPERT", expert + 1, adapter.num_experts(module), layer=layer_index, bit=int(allocation[key]))
             _quantize_expert(
                 module,
                 adapter,
@@ -310,7 +356,9 @@ def apply_allocation(
                 bit=int(allocation[key]),
                 group_size=group_size,
                 percdamp=percdamp,
+                states=states, prefix=f"{module_names[id(module)]}.experts.{expert}",
             )
+        shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
         _quantize_shared_expert(
             module,
             adapter,
@@ -318,7 +366,12 @@ def apply_allocation(
             bit=shared_bit,
             group_size=group_size,
             percdamp=percdamp,
+            states=states, prefix=module_names.get(id(shared), ""),
         )
         del hidden_batches
+        progress("QUANTIZE_LAYER_COMPLETE", layer_index + 1, len(layers))
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    from pmq.packed import install_packed_model
+    install_packed_model(model, adapter, states)

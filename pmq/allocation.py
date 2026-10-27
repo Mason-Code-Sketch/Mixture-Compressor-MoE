@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import math
+from time import perf_counter
+
+from pmq.monitor import LOGGER, progress
 
 import torch
 
@@ -101,28 +105,70 @@ def solve_pmq_layers(
     shared_bit: int,
     candidate_bits: Sequence[int] = (1, 2, 3),
     backend: str = "highs",
+    budget_policy: str = "strict",
 ) -> dict[tuple[int, int], int]:
     """Solve PMQ's independent layer ILPs and flatten assignments by expert."""
     from pmq.solver import solve_layer_ilp
 
-    assignments: dict[tuple[int, int], int] = {}
-    for layer, expert_losses in sorted(loss_by_layer.items()):
-        routed_budget = validate_layer_budget(
-            num_routed_experts=len(expert_losses),
-            average_bit=average_bit,
-            shared_units=shared_units,
-            shared_bit=shared_bit,
-        )
-        solved = solve_layer_ilp(
-            expert_losses,
-            bit_budget=routed_budget,
-            candidate_bits=candidate_bits,
-            backend=backend,
-        )
-        assignments.update(
-            {
-                (int(layer), int(expert)): int(bit)
-                for expert, bit in solved.items()
-            }
-        )
+    if budget_policy not in {"strict", "floor", "balanced_exact"}:
+        raise ValueError(f"unknown PMQ budget policy: {budget_policy}")
+    start = perf_counter()
+    solutions = {}
+    upgrades = []
+    totals = {layer: (len(losses) + shared_units) * average_bit
+              for layer, losses in sorted(loss_by_layer.items())}
+    target = round(sum(totals.values()))
+    if budget_policy == "balanced_exact" and not math.isclose(sum(totals.values()), target, abs_tol=1e-8):
+        raise ValueError("the requested average bit is not representable across all MoE layers")
+    def solve(layer, total_budget, exact):
+        losses = loss_by_layer[layer]
+        routed = int(total_budget) - shared_units * shared_bit
+        result = solve_layer_ilp(losses, bit_budget=routed, candidate_bits=candidate_bits,
+                                 backend=backend, exact_budget=exact)
+        if exact and sum(result.values()) != routed:
+            raise RuntimeError("solver did not fill the exact PMQ layer budget")
+        return result, sum(float(losses[expert][bit]) for expert, bit in result.items())
+    lower_total = 0
+    for position, (layer, total) in enumerate(totals.items(), 1):
+        if budget_policy == "strict":
+            routed = validate_layer_budget(num_routed_experts=len(loss_by_layer[layer]),
+                      average_bit=average_bit, shared_units=shared_units, shared_bit=shared_bit)
+            result = solve_layer_ilp(loss_by_layer[layer], bit_budget=routed,
+                                     candidate_bits=candidate_bits, backend=backend)
+            solutions[layer] = result
+        else:
+            lower = math.floor(total + 1e-8)
+            lower_total += lower
+            result, cost = solve(layer, lower, budget_policy == "balanced_exact")
+            solutions[layer] = result
+            if budget_policy == "balanced_exact" and not math.isclose(total, lower, abs_tol=1e-8):
+                high, high_cost = solve(layer, lower + 1, True)
+                upgrades.append((cost - high_cost, layer, high))
+        progress("ALLOCATE_LAYER", position, len(totals), layer=layer, policy=budget_policy)
+    if budget_policy == "balanced_exact":
+        extra = target - lower_total
+        if not 0 <= extra <= len(upgrades):
+            raise ValueError("invalid balanced PMQ layer budget")
+        # Equal gains have deterministic layer-order tie breaking.
+        for _, layer, result in sorted(upgrades, key=lambda item: (-item[0], item[1]))[:extra]:
+            solutions[layer] = result
+    assignments = {(int(layer), int(expert)): int(bit)
+                   for layer, solved in solutions.items() for expert, bit in solved.items()}
+    actual = sum(assignments.values()) + len(solutions) * shared_units * shared_bit
+    if budget_policy == "balanced_exact" and actual != target:
+        raise RuntimeError("PMQ actual total budget does not equal the requested budget")
+    LOGGER.info("ALLOCATE_COMPLETE policy=%s seconds=%.4f total_budget=%s", budget_policy, perf_counter() - start, actual)
     return assignments
+
+
+def describe_budget(assignments, *, shared_units, shared_bit, requested_average_bit, budget_policy):
+    layers = sorted({layer for layer, expert in assignments})
+    counts = {layer: sum(key[0] == layer for key in assignments) for layer in layers}
+    units = sum(counts.values()) + len(layers) * shared_units
+    per_layer = {str(layer): sum(bit for (index, _), bit in assignments.items() if index == layer)
+                 + shared_units * shared_bit for layer in layers}
+    total = sum(per_layer.values())
+    return {"policy": budget_policy, "requested_average_bit": requested_average_bit,
+            "actual_average_bit": total / units, "actual_total_budget": total,
+            "parameter_equivalent_units": units, "layer_total_budgets": per_layer,
+            "shared_units_per_layer": shared_units, "shared_expert_bit": shared_bit}

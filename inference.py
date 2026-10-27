@@ -165,6 +165,16 @@ def setup_model(model):
     set_auto_linear_tags(model)
 
 def load_quantized_model(save_dir, kwargs):
+    # Keep the public upstream loading entry point for adapted native models.
+    import json
+    from pathlib import Path
+    config = json.loads(Path(save_dir, "config.json").read_text())
+    if "pmq_quantization" in config:
+        from pmq.packed import load_packed_model
+        dtype = kwargs.get("torch_dtype")
+        if isinstance(dtype, str):
+            dtype = None if dtype == "auto" else getattr(torch, dtype)
+        return load_packed_model(save_dir, device_map=kwargs.get("device_map", "auto"), dtype=dtype)
     model = create_model(save_dir, kwargs)
     model.save_dir = save_dir
     setup_model(model)
