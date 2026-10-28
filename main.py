@@ -168,21 +168,21 @@ def mixtral_sequential(model, dataloader, dev, bit_config=None):
                 gptq[name] = GPTQ(subset[name], logger, name, args.wbits)
 
                 if args.mixed_type == "uniform":
-                    gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=False, pack=args.pack) 
+                    gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
                     gptq[name].wbits = args.wbits
                 else:
                     if name not in expert_modules:
-                        gptq[name].quantizer.configure(args.attn_bits, perchannel=True, sym=args.sym, mse=False, pack=args.pack)
+                        gptq[name].quantizer.configure(args.attn_bits, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
                         gptq[name].wbits = args.attn_bits
                     else:
                         if name[:-3] in high_bit_experts:
-                            gptq[name].quantizer.configure(args.wbits+1, perchannel=True, sym=args.sym, mse=False, pack=args.pack)
+                            gptq[name].quantizer.configure(args.wbits+1, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
                             gptq[name].wbits = args.wbits+1
                         elif name[:-3] in low_bit_experts:
-                            gptq[name].quantizer.configure(args.wbits-1, perchannel=True, sym=args.sym, mse=False, pack=args.pack)
+                            gptq[name].quantizer.configure(args.wbits-1, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
                             gptq[name].wbits = args.wbits-1
                         else:
-                            gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=False, pack=args.pack)
+                            gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
                             gptq[name].wbits = args.wbits
             # print(layer)
             def add_batch(name):
