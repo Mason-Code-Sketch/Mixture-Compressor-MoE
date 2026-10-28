@@ -108,7 +108,7 @@ class PackedExperts(nn.Module):
     def forward(self, hidden_states, top_k_index, top_k_weights):
         output = torch.zeros_like(hidden_states)
         for index in torch.unique(top_k_index).tolist():
-            token, rank = torch.where(top_k_index == index)
+            rank, token = torch.where(top_k_index.T == index)
             expert = self.experts[index]
             gate, up = expert.gate_up_proj(hidden_states[token]).chunk(2, dim=-1)
             values = expert.down_proj(self.act_fn(gate) * up)
@@ -145,6 +145,7 @@ def install_packed_model(model, adapter, states):
         _replace(model, name, PackedLinear(state, device=module.weight.device, dtype=module.weight.dtype))
     model.config.pmq_quantization = {
         "format_version": 1, "fused_experts": fused,
+        "trust_remote_code": not type(model).__module__.startswith("transformers.models."),
         "attn_implementation": getattr(model.config, "_attn_implementation", "eager"),
         "experts_implementation": getattr(model.config, "_experts_implementation", None),
     }
@@ -174,7 +175,8 @@ def load_packed_model(directory, *, device_map="auto", dtype=None):
     metadata = getattr(config, "pmq_quantization", None)
     if not metadata or metadata.get("format_version") != 1:
         raise ValueError("checkpoint is not a PMQ native packed model")
-    kwargs = {"trust_remote_code": False, "attn_implementation": metadata["attn_implementation"]}
+    kwargs = {"trust_remote_code": metadata.get("trust_remote_code", False),
+              "attn_implementation": metadata["attn_implementation"]}
     if metadata.get("experts_implementation"):
         kwargs["experts_implementation"] = metadata["experts_implementation"]
     with init_empty_weights():

@@ -349,3 +349,23 @@ Each phase writes its console/progress log and resource samples under `logs/`.
 RAM RSS, available system memory, system swap, physical-GPU usage and process CUDA
 allocation/reservation are distinguished. Sampling maxima are labelled as sampled
 values. The monitor observes resources without changing limits or killing jobs.
+
+
+### Resident grouped evaluation
+
+Saved PMQ checkpoints are quantized once. Independent `ppl` and `zeroshot`
+phases reload the same `qmodel.pt`; FP16/BF16 evaluation decodes projections once
+and uses `torch._grouped_mm` for routed experts on DeepSeek-V2-Lite, Qwen1.5-MoE,
+Qwen3-MoE and Mixtral. Native router, shared-expert and accumulation behavior is
+preserved. These evaluation-only buffers are not saved back to the checkpoint.
+
+```sh
+python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase quantize --average-bit 2.5
+python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase ppl --average-bit 2.5
+python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase zeroshot --average-bit 2.5
+```
+
+The `quantize` phase uses an existing allocation. Both evaluation JSONs record
+`evaluation_backend` and the source checkpoint SHA256. FP32 CPU validation models
+retain the original PyTorch backend. Existing checkpoint/result files are never
+overwritten.

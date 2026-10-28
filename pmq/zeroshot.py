@@ -38,6 +38,8 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
     if output.exists():
         raise FileExistsError(f"seven-task result already exists: {output}")
     model.eval()
+    from pmq.evaluation_backend import prepare_evaluation_model
+    backend = prepare_evaluation_model(model)
     lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size="auto", max_batch_size=8,
               add_bos_token=False, parallelize=True)
     LOGGER.info("SEVEN_START tasks=%s num_fewshot=0 add_bos_token=False", SEVEN_TASKS)
@@ -56,7 +58,7 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
                        "checkpoint_sha256": sha256_file(checkpoint_dir / "qmodel.pt"),
                        "seed": seed, "tasks": list(SEVEN_TASKS), "num_fewshot": 0,
                        "add_bos_token": False, "apply_chat_template": False, "limit": None,
-                       "batch_size": "auto", "max_batch_size": 8},
+                       "batch_size": "auto", "max_batch_size": 8, "evaluation_backend": backend},
         "summary": summary, "harness": raw,
     })
     LOGGER.info("SEVEN_COMPLETE mean=%.8f", summary["mean"])

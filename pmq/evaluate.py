@@ -125,6 +125,8 @@ def evaluate_saved_ppl(protocol, *, checkpoint_dir, seed):
     validate_provenance(protocol, metadata["provenance"], seed=seed)
     tokenizer = load_tokenizer(output)
     model = load_packed_model(output)
+    from pmq.evaluation_backend import prepare_evaluation_model
+    backend = prepare_evaluation_model(model)
     metrics = {}
     for name, settings in protocol.data["dataset"]["evaluations"].items():
         blocks = evaluation_blocks(tokenizer, protocol.evaluation_paths[name], settings)
@@ -135,7 +137,8 @@ def evaluate_saved_ppl(protocol, *, checkpoint_dir, seed):
                          "seconds": perf_counter() - start}
         LOGGER.info("PPL_COMPLETE dataset=%s ppl=%.8f", name, metrics[name]["ppl"])
     result = {"method": "pmq", "status": "complete", "seed": seed, "checkpoint": str(output.resolve()),
-              "checkpoint_sha256": metadata["files"]["qmodel.pt"], "loss_dtype": "float32", "ppl": metrics}
+              "checkpoint_sha256": metadata["files"]["qmodel.pt"], "loss_dtype": "float32",
+              "evaluation_backend": backend, "ppl": metrics}
     path = output / "evaluation.json"
     write_json(path, result)
     return path

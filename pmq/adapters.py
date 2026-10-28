@@ -8,7 +8,7 @@ import torch
 
 
 _FUSED_PATTERN = re.compile(r"model\.layers\.(\d+)\.mlp")
-_MIXTRAL_PATTERN = re.compile(r"model\.layers\.(\d+)\.block_sparse_moe")
+_MIXTRAL_PATTERN = re.compile(r"model\.layers\.(\d+)\.(?:block_sparse_moe|mlp)")
 
 
 class PmqMoeAdapter:
@@ -73,7 +73,7 @@ class PmqMoeAdapter:
         raise TypeError(f"unsupported native router output: {type(output)!r}")
 
     def expert_weights(self, module, expert: int) -> dict[str, torch.Tensor]:
-        if self.architecture == "mixtral":
+        if self.architecture == "mixtral" and isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
             item = module.experts[int(expert)]
             return {name: getattr(item, name).weight.detach() for name in ("w1", "w2", "w3")}
         if isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
@@ -90,7 +90,7 @@ class PmqMoeAdapter:
 
     def set_expert_weights(self, module, expert: int, weights: dict[str, torch.Tensor]) -> None:
         with torch.no_grad():
-            if self.architecture == "mixtral":
+            if self.architecture == "mixtral" and isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
                 item = module.experts[int(expert)]
                 for name, value in weights.items():
                     target = getattr(item, name).weight

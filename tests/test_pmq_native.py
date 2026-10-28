@@ -85,6 +85,7 @@ class NativePmqTest(unittest.TestCase):
                 num_experts_per_tok=2, max_position_embeddings=64,
             )
         cfg._attn_implementation = "eager"
+        cfg._experts_implementation = "eager"
         torch.manual_seed(3)
         model = AutoModelForCausalLM.from_config(cfg).eval()
         adapter = PmqMoeAdapter(architecture)

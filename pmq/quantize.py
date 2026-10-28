@@ -178,7 +178,7 @@ def _quantize_expert(
     prefix="",
 ) -> None:
     inputs = _routed_inputs(module, adapter, hidden_batches, model_config, expert)
-    mixtral = adapter.architecture == "mixtral"
+    mixtral = adapter.architecture == "mixtral" and isinstance(module.experts, (torch.nn.ModuleList, list, tuple))
     if mixtral:
         original = {
             name: value.detach().clone()

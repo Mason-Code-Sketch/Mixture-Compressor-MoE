@@ -21,6 +21,13 @@ def serialize_weights(model, verbose: bool = False) -> dict:
                 # disable state_dict encoding for safetensors
                 module.encoded_state_dict = False
                 state_dict = module.state_dict()
+                if getattr(model.config, "pmq_quantization", None):
+                    # RoPE frequencies can be dtype-dependent. Preserve them instead
+                    # of reconstructing different nonpersistent buffers on reload.
+                    for key in module._non_persistent_buffers_set:
+                        value = module._buffers.get(key)
+                        if isinstance(value, torch.Tensor):
+                            state_dict[key] = value.detach().cpu()
 
                 if len(state_dict) > 0:
                     weights[name] = dict(state_dict)
