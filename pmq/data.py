@@ -9,9 +9,9 @@ import torch
 from datasets import load_from_disk
 
 
-def _tokenize_corpus(tokenizer, dataset, *, add_special_tokens: bool) -> torch.Tensor:
+def _tokenize_corpus(tokenizer, dataset, *, add_special_tokens: bool, separator: str = "\n\n") -> torch.Tensor:
     return tokenizer(
-        "\n\n".join(dataset["text"]),
+        separator.join(dataset["text"]),
         return_tensors="pt",
         add_special_tokens=add_special_tokens,
     ).input_ids[0]
@@ -27,6 +27,7 @@ def calibration_inputs(tokenizer, dataset_path, settings: Mapping[str, object], 
             tokenizer,
             split,
             add_special_tokens=bool(settings.get("add_special_tokens", True)),
+            separator=" ",
         )
         available = tokens.numel() - int(seq_len) + 1
         if samples <= 0 or available < samples:

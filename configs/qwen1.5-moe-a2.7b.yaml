@@ -2,7 +2,7 @@ model:
   name: Qwen1.5-MoE-A2.7B
   id: Qwen1.5-MoE-A2.7B
   architecture: qwen2_moe
-  dtype: bfloat16
+  dtype: float16
   attn_implementation: eager
 
 

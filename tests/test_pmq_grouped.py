@@ -31,7 +31,7 @@ def test_packed_projection_decodes_once_and_keeps_grid(bits):
     assert cached.weight.dtype == torch.bfloat16
 
 
-def tiny_model(kind):
+def tiny_model(kind, dtype=torch.bfloat16):
     transformers = pytest.importorskip("transformers")
     shared = dict(vocab_size=32, hidden_size=16, num_hidden_layers=2, num_attention_heads=2,
                   num_key_value_heads=2, max_position_embeddings=64)
@@ -52,7 +52,7 @@ def tiny_model(kind):
     cfg._attn_implementation = "eager"
     cfg._experts_implementation = "eager"
     torch.manual_seed(23)
-    return transformers.AutoModelForCausalLM.from_config(cfg).to(torch.bfloat16).eval()
+    return transformers.AutoModelForCausalLM.from_config(cfg).to(dtype).eval()
 
 
 @pytest.mark.parametrize("kind", ["deepseek_v2", "qwen2_moe", "qwen3_moe", "mixtral"])
@@ -82,13 +82,14 @@ def test_auto_keeps_float32_validation_models_and_explicit_request_fails():
 
 
 @pytest.mark.parametrize("kind", ["deepseek_v2", "qwen2_moe", "qwen3_moe", "mixtral"])
-def test_quantized_checkpoint_reload_and_grouped_logits(kind, tmp_path):
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path):
     from pmq.adapters import PmqMoeAdapter
     from pmq.quantize import apply_allocation
     from pmq.packed import load_packed_model, save_packed_model
     from pmq.artifacts import sha256_file
 
-    model = tiny_model(kind)
+    model = tiny_model(kind, dtype=dtype)
     architecture = "deepseek_moe" if kind == "deepseek_v2" else kind
     adapter = PmqMoeAdapter(architecture)
     ids = torch.randint(0, 32, (2, 8))

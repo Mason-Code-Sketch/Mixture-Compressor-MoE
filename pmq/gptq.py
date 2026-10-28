@@ -30,40 +30,13 @@ def _mcmoe_params(
     weight: torch.Tensor,
     bits: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Solve one MC-MoE asymmetric quantization grid in FP32."""
-    values = weight.float()
-    if bits == 1:
-        scale = values.abs().mean(dim=1) * 2
-        return scale, torch.full_like(scale, 0.5)
-    max_int = 2**bits - 1
-    zeros = torch.zeros(values.shape[0], device=values.device, dtype=values.dtype)
-    minimum = torch.minimum(values.amin(dim=1), zeros)
-    maximum = torch.maximum(values.amax(dim=1), zeros)
-    empty = (minimum == 0) & (maximum == 0)
-    minimum = torch.where(empty, torch.full_like(minimum, -1), minimum)
-    maximum = torch.where(empty, torch.ones_like(maximum), maximum)
-    scale = (maximum - minimum) / max_int
-    zero = -minimum / scale
-    best_error = torch.full_like(minimum, float("inf"))
-    factors = torch.cat(
-        (
-            torch.ones(1, device=values.device, dtype=torch.float32),
-            torch.linspace(1.0, 1.1, 51, device=values.device, dtype=torch.float32)[1:],
-            torch.linspace(1.0, 0.9, 51, device=values.device, dtype=torch.float32)[1:],
-        )
-    )
-    for factor in factors:
-        candidate_minimum = factor * minimum
-        candidate_maximum = factor * maximum
-        candidate_scale = (candidate_maximum - candidate_minimum) / max_int
-        candidate_zero = -candidate_minimum / candidate_scale
-        quantized = _quantize_uniform(values, bits, candidate_scale, candidate_zero)
-        error = (quantized - values).abs().pow(2.4).sum(dim=1)
-        improved = error < best_error
-        best_error = torch.where(improved, error, best_error)
-        scale = torch.where(improved, candidate_scale, scale)
-        zero = torch.where(improved, candidate_zero, zero)
-    return scale, zero
+    """Use the original PMQ FP16 parameter solver with the existing MSE search."""
+    from utils.quantizer_moe import Quantizer
+
+    quantizer = Quantizer()
+    quantizer.configure(bits, perchannel=True, sym=False, mse=True, pack=True)
+    quantizer.find_params(weight, weight=True)
+    return quantizer.scale.flatten(), quantizer.zero.flatten()
 
 
 class TensorGPTQ:
