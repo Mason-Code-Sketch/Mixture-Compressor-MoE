@@ -2,11 +2,13 @@
 import json
 
 import pytest
+import torch
 
 from pmq import monitor
 
 
 def test_failed_attempt_and_fresh_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, "_cuda_peaks", lambda reset=False: {})
     monkeypatch.setattr(monitor, "resource_snapshot", lambda: {
         "rss_bytes": 10, "available_bytes": 100,
         "gpu": [{"physical_device": 0, "used_mib": 999}],
@@ -49,3 +51,14 @@ def test_timer_includes_synchronization_and_failed_component_stays_failed(tmp_pa
     with run.component("quant_gptq"):
         pass
     assert run.components["quant_gptq"]["status"] == "failed"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_component_records_allocator_peak(tmp_path):
+    with monitor.RunMonitor(tmp_path, "quantize"):
+        with monitor.component("quant_gptq"):
+            tensor = torch.empty(2 * 1024 * 1024, device="cuda", dtype=torch.float32)
+    record = json.loads((tmp_path / "quantize_resources.json").read_text())
+    component = record["components"]["quant_gptq"]
+    assert component["status"] == "executed"
+    assert sum(component["per_gpu_peak_memory_gib"].values()) >= tensor.numel() * tensor.element_size() / 2**30
