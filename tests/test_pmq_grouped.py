@@ -83,16 +83,19 @@ def test_auto_keeps_float32_validation_models_and_explicit_request_fails():
 
 @pytest.mark.parametrize("kind", ["deepseek_v2", "qwen2_moe", "qwen3_moe", "mixtral"])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path):
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
     from pmq.adapters import PmqMoeAdapter
     from pmq.quantize import apply_allocation
     from pmq.packed import load_packed_model, save_packed_model
     from pmq.artifacts import sha256_file
 
-    model = tiny_model(kind, dtype=dtype)
+    model = tiny_model(kind, dtype=dtype).to(device)
     architecture = "deepseek_moe" if kind == "deepseek_v2" else kind
     adapter = PmqMoeAdapter(architecture)
-    ids = torch.randint(0, 32, (2, 8))
+    ids = torch.randint(0, 32, (2, 8), device=device)
     allocation = {(layer, expert): 1 + expert % 3
                   for layer, module in adapter.collect_moe_modules(model).items()
                   for expert in range(adapter.num_experts(module))}
@@ -109,7 +112,7 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path):
             Path(path, "tokenizer_config.json").write_text("{}")
     save_packed_model(model, Tokenizer(), tmp_path)
     digest = sha256_file(tmp_path / "qmodel.pt")
-    reloaded = load_packed_model(tmp_path, device_map="cpu")
+    reloaded = load_packed_model(tmp_path, device_map=device)
     with torch.inference_mode():
         torch.testing.assert_close(reloaded(ids, use_cache=False).logits, reference, rtol=0, atol=0)
         original_decode = PackedLinear.dequantize
@@ -127,7 +130,7 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path):
     # PPL keeps checkpoint attention; zeroshot constructs its own attention classes.
     assert reloaded.config._attn_implementation == "eager"
     from pmq.zeroshot import load_zeroshot_model
-    zeroshot = load_zeroshot_model(tmp_path, device_map="cpu")
+    zeroshot = load_zeroshot_model(tmp_path, device_map=device)
     expected_attention = "eager" if kind == "deepseek_v2" else "sdpa"
     assert zeroshot.config._attn_implementation == expected_attention
     prepare_evaluation_model(zeroshot, backend="grouped_cached")
