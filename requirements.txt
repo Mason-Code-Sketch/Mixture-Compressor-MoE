@@ -7,7 +7,7 @@ scikit_learn==1.4.1.post1
 scipy==1.13.1
 torch==2.2.1
 tqdm>=4.66.3
-transformers>=4.36.1
+transformers==5.17.0
 termcolor
 huggingface_hub
 accelerate
