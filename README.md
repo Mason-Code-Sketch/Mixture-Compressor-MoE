@@ -308,3 +308,26 @@ The `quantize` phase uses an existing allocation. Both evaluation JSONs record
 `evaluation_backend` and the source checkpoint SHA256. FP32 CPU validation models
 retain the original PyTorch backend. Existing checkpoint/result files are never
 overwritten.
+
+### Component resource records
+
+`RunMonitor` retains each phase's `.log`, `_resources.jsonl` samples and
+`_resources.json` summary in the existing log directory. Native phase commands
+now also record `comp_stats`, `solve_lp`, `quant_gptq`, model/data loading,
+checkpoint I/O, per-dataset PPL and seven-task components. Core elapsed seconds
+and percentage shares exclude loading, saving and evaluation. Shared factor
+collection is counted once when assembling a multi-budget resource table.
+
+Component times synchronize CUDA before starting and stopping. Peak reserved
+memory comes from the process's PyTorch allocator; per-GPU peak sums are upper
+bounds and exclude driver/non-PyTorch allocations. The existing sampled
+`nvidia-smi` whole-device memory remains a separate field and may include other
+processes. Process-tree RSS uses the configured sampling interval (default five
+seconds), may double-count shared pages, and can miss short-lived peaks.
+
+Attempts carry unique `run_id` values. Reruns archive the previous log, samples
+and summary, then start fresh. Failed components and sampling errors are
+explicitly recorded. A hard-killed attempt can leave a `running` summary with
+its active component; it must not be treated as completed. Resource summaries
+are written atomically at component boundaries and command exit. Historical
+runs without allocator records cannot be assigned measured peaks retroactively.
