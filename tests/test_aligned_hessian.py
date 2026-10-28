@@ -41,6 +41,6 @@ def test_low_bit_compensation_changes_the_next_column(bits):
     zero = torch.full((1,), 2 ** (bits - 1) - .5, dtype=torch.float16)
     factor = torch.tensor([[1., 2.], [0., 1.]])
     with patch("pmq.gptq._mcmoe_params", return_value=(scale, zero)), \
-         patch("pmq.hessian.inverse_hessian_factor", return_value=factor):
+         patch("pmq.gptq.inverse_hessian_factor", return_value=factor):
         result = TensorGPTQ(weight, bits=bits).quantize(group_size=2, percdamp=.01)
     assert torch.equal(result, torch.tensor([[-.5, -.5]], dtype=torch.float16))

@@ -9,6 +9,7 @@ import torch.nn.functional as functional
 
 from pmq.adapters import PmqMoeAdapter
 from pmq.data import calibration_inputs
+from pmq.config import resolve_quantization_settings
 from pmq.gptq import TensorGPTQ
 from pmq.runtime import input_device, load_tokenizer
 from pmq.monitor import LOGGER, progress
@@ -85,12 +86,13 @@ def _quantize_matrix(
     bit: int,
     group_size: int,
     percdamp: float,
+    mse: bool = True,
     states=None,
     name=None,
 ) -> torch.Tensor:
     if int(bit) >= 16:
         return weight.detach().clone()
-    gptq = TensorGPTQ(weight, bits=int(bit))
+    gptq = TensorGPTQ(weight, bits=int(bit), mse=mse)
     for inputs in input_batches:
         gptq.add_batch(inputs.to(weight.device, dtype=weight.dtype))
     result = gptq.quantize(group_size=group_size, percdamp=percdamp)
@@ -174,6 +176,7 @@ def _quantize_expert(
     bit: int,
     group_size: int,
     percdamp: float,
+    mse: bool = True,
     states=None,
     prefix="",
 ) -> None:
@@ -186,11 +189,11 @@ def _quantize_expert(
         }
         quantized = dict(original)
         quantized["w1"] = _quantize_matrix(
-            original["w1"], inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+            original["w1"], inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
             states=states, name=f"{prefix}.w1"
         )
         quantized["w3"] = _quantize_matrix(
-            original["w3"], inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+            original["w3"], inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
             states=states, name=f"{prefix}.w3"
         )
         down_inputs = _expert_down_inputs(
@@ -200,7 +203,7 @@ def _quantize_expert(
             activation=module.experts[expert].act_fn,
         )
         quantized["w2"] = _quantize_matrix(
-            original["w2"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+            original["w2"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
             states=states, name=f"{prefix}.w2"
         )
         adapter.set_expert_weights(module, expert, quantized)
@@ -212,7 +215,7 @@ def _quantize_expert(
         quantized = dict(original)
         for name in ("gate_proj", "up_proj"):
             quantized[name] = _quantize_matrix(
-                original[name], inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+                original[name], inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
                 states=states, name=f"{prefix}.{name}"
             )
         down_inputs = _expert_down_inputs(
@@ -220,7 +223,7 @@ def _quantize_expert(
         )
         quantized["down_proj"] = _quantize_matrix(
             original["down_proj"], down_inputs, bit=bit,
-            group_size=group_size, percdamp=percdamp,
+            group_size=group_size, percdamp=percdamp, mse=mse,
             states=states, name=f"{prefix}.down_proj"
         )
         adapter.set_expert_weights(module, expert, quantized)
@@ -229,7 +232,7 @@ def _quantize_expert(
     original_gate_up = module.experts.gate_up_proj[expert].detach().clone()
     original_down = module.experts.down_proj[expert].detach().clone()
     quantized_gate_up = _quantize_matrix(
-        original_gate_up, inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+        original_gate_up, inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
         states=states, name=f"{prefix}.gate_up_proj"
     )
     gate, up = quantized_gate_up.chunk(2, dim=0)
@@ -240,7 +243,7 @@ def _quantize_expert(
         activation=module.experts.act_fn,
     )
     quantized_down = _quantize_matrix(
-        original_down, down_inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+        original_down, down_inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
         states=states, name=f"{prefix}.down_proj"
     )
     adapter.set_expert_weights(
@@ -258,6 +261,7 @@ def _quantize_shared_expert(
     bit: int,
     group_size: int,
     percdamp: float,
+    mse: bool = True,
     states=None,
     prefix="",
 ) -> None:
@@ -266,11 +270,11 @@ def _quantize_shared_expert(
         return
     quantized = dict(original)
     quantized["gate_proj"] = _quantize_matrix(
-        original["gate_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp,
+        original["gate_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
         states=states, name=f"{prefix}.gate_proj"
     )
     quantized["up_proj"] = _quantize_matrix(
-        original["up_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp,
+        original["up_proj"], hidden_batches, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
         states=states, name=f"{prefix}.up_proj"
     )
     shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
@@ -281,7 +285,7 @@ def _quantize_shared_expert(
         activation=getattr(shared, "act_fn", functional.silu),
     )
     quantized["down_proj"] = _quantize_matrix(
-        original["down_proj"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp,
+        original["down_proj"], down_inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse,
         states=states, name=f"{prefix}.down_proj"
     )
     adapter.set_shared_weights(module, quantized)
@@ -297,6 +301,8 @@ def apply_allocation(
     seed: int,
 ) -> None:
     """Materialize one PMQ plan using PMQ's layer-sequential GPTQ pipeline."""
+    quantization = resolve_quantization_settings(protocol.data["quantization"])
+    mse = quantization["mse"]
     tokenizer = load_tokenizer(protocol.model_path)
     gptq_inputs = calibration_inputs(
         tokenizer,
@@ -306,7 +312,6 @@ def apply_allocation(
         seq_len=int(protocol.data["calibration"]["gptq"]["seq_len"]),
         seed=seed,
     )
-    quantization = protocol.data["quantization"]
     group_size = int(quantization["group_size"])
     percdamp = float(quantization["percdamp"])
     standard_bit = int(quantization["standard_linear_bit"])
@@ -334,7 +339,7 @@ def apply_allocation(
                     standard_inputs[linear],
                     bit=bit,
                     group_size=group_size,
-                    percdamp=percdamp,
+                    percdamp=percdamp, mse=mse,
                     states=states, name=f"model.layers.{layer_index}.{name}",
                 )
             )
@@ -355,7 +360,7 @@ def apply_allocation(
                 expert=expert,
                 bit=int(allocation[key]),
                 group_size=group_size,
-                percdamp=percdamp,
+                percdamp=percdamp, mse=mse,
                 states=states, prefix=f"{module_names[id(module)]}.experts.{expert}",
             )
         shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
@@ -365,7 +370,7 @@ def apply_allocation(
             hidden_batches,
             bit=shared_bit,
             group_size=group_size,
-            percdamp=percdamp,
+            percdamp=percdamp, mse=mse,
             states=states, prefix=module_names.get(id(shared), ""),
         )
         del hidden_batches

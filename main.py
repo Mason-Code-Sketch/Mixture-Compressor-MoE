@@ -8,6 +8,7 @@ from transformers.models.mixtral.modeling_mixtral import MixtralForCausalLM
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 
 from gptq import GPTQ
+from pmq.config import validate_native_cli_args
 from modelutils import find_layers
 from datautils import get_loaders
 from quant.QLinear import *
@@ -168,21 +169,21 @@ def mixtral_sequential(model, dataloader, dev, bit_config=None):
                 gptq[name] = GPTQ(subset[name], logger, name, args.wbits)
 
                 if args.mixed_type == "uniform":
-                    gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
+                    gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=args.mse, pack=args.pack)
                     gptq[name].wbits = args.wbits
                 else:
                     if name not in expert_modules:
-                        gptq[name].quantizer.configure(args.attn_bits, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
+                        gptq[name].quantizer.configure(args.attn_bits, perchannel=True, sym=args.sym, mse=args.mse, pack=args.pack)
                         gptq[name].wbits = args.attn_bits
                     else:
                         if name[:-3] in high_bit_experts:
-                            gptq[name].quantizer.configure(args.wbits+1, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
+                            gptq[name].quantizer.configure(args.wbits+1, perchannel=True, sym=args.sym, mse=args.mse, pack=args.pack)
                             gptq[name].wbits = args.wbits+1
                         elif name[:-3] in low_bit_experts:
-                            gptq[name].quantizer.configure(args.wbits-1, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
+                            gptq[name].quantizer.configure(args.wbits-1, perchannel=True, sym=args.sym, mse=args.mse, pack=args.pack)
                             gptq[name].wbits = args.wbits-1
                         else:
-                            gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=True, pack=args.pack)
+                            gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=args.mse, pack=args.pack)
                             gptq[name].wbits = args.wbits
             # print(layer)
             def add_batch(name):
@@ -265,6 +266,8 @@ if __name__ == "__main__":
         choices=["wikitext2", "ptb", "c4", "mix"],
         help="Where to extract calibration data from.",
     )
+    parser.add_argument("--mse", action=argparse.BooleanOptionalAction, default=True,
+                        help="Search the quantization range; use --no-mse to disable")
     parser.add_argument("--load_quantized", action="store_true")
     parser.add_argument(
         "--seed", type=int, default=0, help="Seed for sampling the calibration data."
@@ -363,6 +366,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    validate_native_cli_args(args)
     print(f'Arguments: {args}')
 
     groupsize = args.groupsize

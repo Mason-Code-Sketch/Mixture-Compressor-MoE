@@ -319,8 +319,8 @@ replace the original PKLs or packed model. Existing outputs are not overwritten.
 
 DeepSeek is loaded through native Transformers experts, with the original YaRN
 attention scale retained when needed. Both list-based and fused expert layouts are
-supported. GPTQ scales/zeros are retained in FP32 so packing does not introduce a
-second quantization or alter the materialized weights.
+supported. GPTQ scales/zeros are solved in the original FP16 arithmetic and stored
+in FP32 metadata without another parameter search or quantization.
 
 The DeepSeek-V2-Lite configuration uses `budget_policy: balanced_exact`. It
 solves floor/ceiling layer budgets exactly and assigns the required extra units

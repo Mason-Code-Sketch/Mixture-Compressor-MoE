@@ -49,6 +49,7 @@ quantization:
   group_size: 128
   candidate_quantizer: normal
   percdamp: 0.01
+  mse: true
   standard_linear_bit: 4
   router_bit: 16
 
