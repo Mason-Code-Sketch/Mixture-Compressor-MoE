@@ -154,17 +154,22 @@ class PmqProtocolTest(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(quantized).all())
 
-    def test_pmq_mse_search_uses_fp32_for_low_bit_weights(self):
-        for dtype in (torch.bfloat16, torch.float16):
-            with patch("pmq.gptq._quantize_uniform", wraps=_quantize_uniform) as quantize:
-                scale, zero = _mcmoe_params(
-                    torch.randn(4, 8, dtype=dtype), 2
-                )
-            self.assertEqual(scale.dtype, torch.float32)
-            self.assertEqual(zero.dtype, torch.float32)
-            self.assertEqual(quantize.call_count, 101)
+    def test_pmq_parameter_solver_matches_original_fp16_quantizer(self):
+        from utils.quantizer_moe import Quantizer
+        for dtype in (torch.float32, torch.bfloat16, torch.float16):
+            for bits in (1, 2, 3, 4):
+                torch.manual_seed(13)
+                weight = torch.randn(8, 16).to(dtype)
+                native = Quantizer()
+                native.configure(bits, perchannel=True, sym=False, mse=True, pack=True)
+                native.find_params(weight, weight=True)
+                scale, zero = _mcmoe_params(weight, bits)
+                self.assertEqual(scale.dtype, torch.float16)
+                self.assertEqual(zero.dtype, torch.float16)
+                torch.testing.assert_close(scale, native.scale.flatten(), rtol=0, atol=0)
+                torch.testing.assert_close(zero, native.zero.flatten(), rtol=0, atol=0)
 
-    def test_tensor_gptq_uses_fp32_for_grid_solving(self):
+    def test_tensor_gptq_keeps_fp32_compensation_weights(self):
         gptq = TensorGPTQ(torch.randn(2, 4, dtype=torch.bfloat16), bits=2)
         with patch("pmq.gptq._mcmoe_params", wraps=_mcmoe_params) as solve:
             gptq.quantize(group_size=4, percdamp=0.01)
@@ -195,13 +200,26 @@ class PmqProtocolTest(unittest.TestCase):
 
         self.assertEqual([block.numel() for block in blocks], [2048, 2048])
 
-    def test_deepseek_protocol_uses_native_bfloat16(self):
-        path = Path(__file__).parents[1] / "configs" / "deepseek-v2-lite.yaml"
-        self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "bfloat16")
+    def test_all_four_protocols_use_original_fp16_weights(self):
+        configs = list((Path(__file__).parents[1] / "configs").glob("*.yaml"))
+        self.assertEqual(len(configs), 4)
+        for path in configs:
+            self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "float16", path)
 
-    def test_mixtral_protocol_uses_native_bfloat16(self):
-        path = Path(__file__).parents[1] / "configs" / "mixtral-8x7b-v0.1.yaml"
-        self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "bfloat16")
+    def test_wt2_calibration_uses_spaces_and_ppl_keeps_double_newlines(self):
+        from pmq.data import calibration_inputs
+        texts = []
+        class Tokenizer:
+            def __call__(self, text, **_kwargs):
+                texts.append(text)
+                return type("Encoded", (), {"input_ids": torch.arange(32).unsqueeze(0)})()
+        dataset = {"train": {"text": ["first", "second"]},
+                   "test": {"text": ["first", "second"]}}
+        with patch("pmq.data.load_from_disk", return_value=dataset):
+            calibration_inputs(Tokenizer(), "unused", {"split": "train"},
+                               samples=2, seq_len=8, seed=0)
+            evaluation_blocks(Tokenizer(), "unused", {"split": "test", "seq_len": 8})
+        self.assertEqual(texts, ["first second", "first\n\nsecond"])
 
     def test_qwen_router_normalization_follows_native_config(self):
         class Module:

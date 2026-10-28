@@ -28,7 +28,7 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
         num_experts=4, num_experts_per_tok=2, max_position_embeddings=64)
     cfg._attn_implementation = "eager"
     cfg._experts_implementation = "eager"
-    AutoModelForCausalLM.from_config(cfg).to(torch.bfloat16).save_pretrained(model_path)
+    AutoModelForCausalLM.from_config(cfg).to(torch.float16).save_pretrained(model_path)
     raw_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0, "[EOS]": 1, "a": 2, "b": 3, "c": 4, "d": 5}, unk_token="[UNK]"))
     raw_tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     PreTrainedTokenizerFast(tokenizer_object=raw_tokenizer, unk_token="[UNK]", eos_token="[EOS]").save_pretrained(model_path)
@@ -38,7 +38,7 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
                      for split in ("train", "test", "validation")}).save_to_disk(workspace / "datasets" / name)
     output = repository / "results" / "tiny"
     config = {
-        "model": {"name": "tiny", "id": "tiny", "architecture": "qwen2_moe", "dtype": "bfloat16", "device_map": "cpu", "attn_implementation": "eager"},
+        "model": {"name": "tiny", "id": "tiny", "architecture": "qwen2_moe", "dtype": "float16", "device_map": "cpu", "attn_implementation": "eager"},
         "dataset": {"factors": {"name": "c4", "split": "train", "protocol": "random_document_windows"},
             "gptq_calibration": {"name": "wiki", "split": "train", "protocol": "corpus_windows"},
             "evaluations": {"wikitext2": {"name": "wiki", "split": "test", "protocol": "corpus_windows", "seq_len": 8, "max_blocks": 2},
