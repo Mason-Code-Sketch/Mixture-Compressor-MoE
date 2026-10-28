@@ -174,34 +174,35 @@ class Quantizer(nn.Module):
                     zero = torch.full_like(scale, (maxq + 1) / 2, dtype=torch.float16)
                 else:
                     zero = -xmin / scale
-            tau_range = 0.1
-            tau_n = 50
-            # best = torch.zeros_like(x[:, 0], device=dev)
-            best = torch.full([x.shape[0]], float('inf'), device=dev, dtype=torch.float16)
-            # _p = torch.ones([x.shape[0]], dtype=torch.float16)
-            p_left = 1 - tau_range
-            p_right = 1 + tau_range
-            for p in torch.cat([torch.ones(1),torch.linspace(1.0,p_right,tau_n+1)[1:],torch.linspace(1.0,p_left,tau_n+1)[1:]]):
-                xmin1 = p * xmin
-                xmax1 = p * xmax
-                scale1 = (xmax1 - xmin1) / maxq
-                # zero1 = torch.round(-xmin1 / scale1) if not self.sym else zero
-                zero1 = -xmin1 / scale1
+            if self.mse:
+                tau_range = 0.1
+                tau_n = 50
+                # best = torch.zeros_like(x[:, 0], device=dev)
+                best = torch.full([x.shape[0]], float('inf'), device=dev, dtype=torch.float16)
+                # _p = torch.ones([x.shape[0]], dtype=torch.float16)
+                p_left = 1 - tau_range
+                p_right = 1 + tau_range
+                for p in torch.cat([torch.ones(1),torch.linspace(1.0,p_right,tau_n+1)[1:],torch.linspace(1.0,p_left,tau_n+1)[1:]]):
+                    xmin1 = p * xmin
+                    xmax1 = p * xmax
+                    scale1 = (xmax1 - xmin1) / maxq
+                    # zero1 = torch.round(-xmin1 / scale1) if not self.sym else zero
+                    zero1 = -xmin1 / scale1
 
-                w_q = self._quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), maxq)
-                w_q = scale1.unsqueeze(1) * (w_q - zero1.unsqueeze(1))
+                    w_q = self._quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), maxq)
+                    w_q = scale1.unsqueeze(1) * (w_q - zero1.unsqueeze(1))
 
-                w_q -= w
-                w_q.abs_()
-                w_q.pow_(self.norm)
+                    w_q -= w
+                    w_q.abs_()
+                    w_q.pow_(self.norm)
                 
-                err = torch.sum(w_q, 1)
-                tmp = err < best
-                if torch.any(tmp):
-                    # _p[tmp] = p
-                    best[tmp] = err[tmp]
-                    scale[tmp] = scale1[tmp]
-                    zero[tmp] = zero1[tmp]
+                    err = torch.sum(w_q, 1)
+                    tmp = err < best
+                    if torch.any(tmp):
+                        # _p[tmp] = p
+                        best[tmp] = err[tmp]
+                        scale[tmp] = scale1[tmp]
+                        zero[tmp] = zero1[tmp]
         if not perchannel:
             if weight:
                 tmp = shape[0]
