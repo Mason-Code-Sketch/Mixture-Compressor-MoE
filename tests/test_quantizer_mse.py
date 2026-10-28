@@ -30,30 +30,38 @@ class QuantizerMseTest(unittest.TestCase):
                             quantizer.find_params(self.weights, weight=True)
                         if bits == 2:
                             expected_scale = torch.tensor(
-                                [4., 4 / 3, 8 / 3, 2 / 3], dtype=torch.float16
+                                [4., 4 / 3, 8 / 3, 1.], dtype=torch.float16
                             ).reshape(-1, 1)
                             expected_zero = torch.full_like(expected_scale, 2.) if symmetric else torch.tensor(
-                                [1., 0., 3., 1.5], dtype=torch.float16
+                                [1., 0., 3., 0.], dtype=torch.float16
                             ).reshape(-1, 1)
+                            expected_zero[-1] = 0
                             torch.testing.assert_close(quantizer.scale, expected_scale, rtol=0, atol=0)
                             torch.testing.assert_close(quantizer.zero, expected_zero, rtol=0, atol=0)
 
-    def test_enabled_search_preserves_existing_numeric_result(self):
-        # Captured from the original solver before the switch fix.
-        quantizer = Quantizer()
-        quantizer.configure(2, sym=False, mse=True, pack=True)
-        with patch.object(quantizer, '_quantize', wraps=quantizer._quantize) as search:
-            quantizer.find_params(self.weights, weight=True)
-        self.assertEqual(search.call_count, 101)
-        torch.testing.assert_close(
-            quantizer.scale,
-            torch.tensor([3.599609375, 1.2666015625, 2.431640625, .60009765625], dtype=torch.float16).reshape(-1, 1),
-            rtol=0, atol=0,
-        )
-        torch.testing.assert_close(
-            quantizer.zero, torch.tensor([1., 0., 3., 1.5], dtype=torch.float16).reshape(-1, 1),
-            rtol=0, atol=0,
-        )
+    def test_default_search_covers_1_to_point21_and_keeps_fp16(self):
+        from utils.quantizer_moe import normal_quantize
+        for packed in (False, True):
+            quantizer = Quantizer()
+            quantizer.configure(2, sym=False, pack=packed)
+            with patch("utils.quantizer_moe.normal_quantize", wraps=normal_quantize) as search:
+                quantizer.find_params(self.weights, weight=True)
+            self.assertEqual(search.call_count, 80)
+            first = search.call_args_list[0].args[1]
+            last = search.call_args_list[-1].args[1]
+            self.assertEqual(first.dtype, torch.float16)
+            self.assertEqual(last.dtype, torch.float16)
+            torch.testing.assert_close(first[0], torch.tensor([4.], dtype=torch.float16), rtol=0, atol=0)
+            torch.testing.assert_close(last[0], torch.tensor([4 * .21], dtype=torch.float16), rtol=0, atol=0)
+            self.assertEqual(quantizer.scale.dtype, torch.float16)
+            self.assertEqual(quantizer.scale[-1].item(), 1)
+            self.assertEqual(quantizer.zero[-1].item(), 0)
+            if packed:
+                expected_scale, expected_zero = quantizer.scale.clone(), quantizer.zero.clone()
+            else:
+                unpacked_scale, unpacked_zero = quantizer.scale.clone(), quantizer.zero.clone()
+        torch.testing.assert_close(expected_scale, unpacked_scale, rtol=0, atol=0)
+        torch.testing.assert_close(expected_zero, unpacked_zero, rtol=0, atol=0)
 
     def test_binary_parameters_do_not_depend_on_mse(self):
         for packed in (False, True):

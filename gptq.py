@@ -105,9 +105,6 @@ class GPTQ:
             self.quantizer.find_params(W, weight=True)
         H = self.H
         del self.H
-        dead = torch.diag(H) == 0
-        H[dead, dead] = 1
-        W[:, dead] = 0
 
         if actorder:
             perm = torch.argsort(torch.diag(H), descending=True)
@@ -117,12 +114,8 @@ class GPTQ:
         Losses = torch.zeros_like(W)
         Q = torch.zeros_like(W)
 
-        damp = percdamp * torch.mean(torch.diag(H))
-        diag = torch.arange(self.columns, device=self.dev)
-        H[diag, diag] += damp
-        H = torch.linalg.cholesky(H)
-        H = torch.cholesky_inverse(H)
-        H = torch.linalg.cholesky(H, upper=True)
+        from pmq.hessian import inverse_hessian_factor
+        H = inverse_hessian_factor(H, percdamp)
         Hinv = H
 
         g_idx = []
@@ -166,8 +159,7 @@ class GPTQ:
                 Losses1[:, i] = (w - q_r)**2 / d**2
                 err1 = (w - q_r) / d
 
-                if self.wbits > 3:
-                    W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
                 
                 Err1[:, i] = err1
 

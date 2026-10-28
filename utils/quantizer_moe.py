@@ -85,7 +85,7 @@ class Quantizer(nn.Module):
         self.register_buffer('scale', torch.zeros(shape, dtype=torch.float16))
         self.register_buffer('zero', torch.zeros(shape, dtype=torch.float16))
 
-    def configure(self, bits, perchannel=False, sym=True, mse=False, norm=2.4, grid=100, maxshrink=.8, trits=False, pack=False):
+    def configure(self, bits, perchannel=False, sym=True, mse=True, norm=2.4, grid=100, maxshrink=.8, trits=False, pack=False):
 
         self.maxq = torch.tensor(2**bits - 1)
         self.perchannel = perchannel
@@ -175,21 +175,17 @@ class Quantizer(nn.Module):
                 else:
                     zero = -xmin / scale
             if self.mse:
-                tau_range = 0.1
-                tau_n = 50
-                # best = torch.zeros_like(x[:, 0], device=dev)
                 best = torch.full([x.shape[0]], float('inf'), device=dev, dtype=torch.float16)
-                # _p = torch.ones([x.shape[0]], dtype=torch.float16)
-                p_left = 1 - tau_range
-                p_right = 1 + tau_range
-                for p in torch.cat([torch.ones(1),torch.linspace(1.0,p_right,tau_n+1)[1:],torch.linspace(1.0,p_left,tau_n+1)[1:]]):
+                for index in range(int(self.maxshrink * self.grid)):
+                    p = 1 - index / self.grid
                     xmin1 = p * xmin
                     xmax1 = p * xmax
                     scale1 = (xmax1 - xmin1) / maxq
                     # zero1 = torch.round(-xmin1 / scale1) if not self.sym else zero
                     zero1 = -xmin1 / scale1
 
-                    w_q = self._quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), maxq)
+                    # Search always scores one dequantization, including pack=False.
+                    w_q = normal_quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), maxq)
                     w_q = scale1.unsqueeze(1) * (w_q - zero1.unsqueeze(1))
 
                     w_q -= w
@@ -203,6 +199,10 @@ class Quantizer(nn.Module):
                         best[tmp] = err[tmp]
                         scale[tmp] = scale1[tmp]
                         zero[tmp] = zero1[tmp]
+        if self.maxq > 1:
+            empty = (x == 0).all(dim=1)
+            scale[empty] = 1
+            zero[empty] = 0
         if not perchannel:
             if weight:
                 tmp = shape[0]

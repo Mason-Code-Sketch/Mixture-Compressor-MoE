@@ -75,15 +75,8 @@ class TensorGPTQ:
         weight = self.weight.float().clone()
         hessian = self.hessian
         self.hessian = None
-        dead = torch.diag(hessian) == 0
-        hessian[dead, dead] = 1
-        weight[:, dead] = 0
-
-        diagonal = torch.arange(self.columns, device=weight.device)
-        hessian[diagonal, diagonal] += percdamp * torch.mean(torch.diag(hessian))
-        hessian = torch.linalg.cholesky(hessian)
-        hessian = torch.cholesky_inverse(hessian)
-        hessian = torch.linalg.cholesky(hessian, upper=True)
+        from pmq.hessian import inverse_hessian_factor
+        hessian = inverse_hessian_factor(hessian, percdamp)
         denom_floor = torch.clamp(
             torch.diag(hessian).abs().mean() * 1e-6,
             min=1e-8,
@@ -128,10 +121,9 @@ class TensorGPTQ:
                     posinf=0.0,
                     neginf=0.0,
                 )
-                if self.bits > 3:
-                    source[:, offset:] -= error.unsqueeze(1).matmul(
-                        block_inverse[offset, offset:].unsqueeze(0)
-                    )
+                source[:, offset:] -= error.unsqueeze(1).matmul(
+                    block_inverse[offset, offset:].unsqueeze(0)
+                )
                 errors[:, offset] = error
             result[:, start:end] = quantized
             weight[:, end:] -= errors.matmul(hessian[start:end, end:])
