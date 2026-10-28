@@ -79,6 +79,7 @@ class TensorGPTQ:
             (self.columns, self.columns), device=weight.device, dtype=torch.float32
         )
         self.samples = 0
+        self.packed_state = None
 
     @torch.no_grad()
     def add_batch(self, inputs: torch.Tensor) -> None:
@@ -116,6 +117,8 @@ class TensorGPTQ:
         )
 
         result = torch.zeros_like(weight)
+        codes = torch.zeros_like(weight, dtype=torch.uint8)
+        group_scales, group_zeros = [], []
         block_size = int(group_size)
         for start in range(0, self.columns, block_size):
             end = min(start + block_size, self.columns)
@@ -132,6 +135,13 @@ class TensorGPTQ:
                         weight[:, start : start + block_size],
                         self.bits,
                     )
+                    group_scales.append(scale.detach().clone())
+                    group_zeros.append(zero.detach().clone())
+                if self.bits == 1:
+                    levels = (column >= 0).to(torch.uint8)
+                else:
+                    levels = (column / scale + zero).round().clamp(0, 2**self.bits - 1).to(torch.uint8)
+                codes[:, start + offset] = levels
                 reconstructed = _quantize_uniform(column, self.bits, scale, zero)
                 quantized[:, offset] = reconstructed
                 denominator = torch.where(
@@ -152,4 +162,9 @@ class TensorGPTQ:
                 errors[:, offset] = error
             result[:, start:end] = quantized
             weight[:, end:] -= errors.matmul(hessian[start:end, end:])
+        from pmq.packed import pack_matrix
+        self.packed_state = pack_matrix(
+            codes, torch.stack(group_scales, dim=1), torch.stack(group_zeros, dim=1),
+            bits=self.bits, group_size=group_size, dtype=self.weight.dtype,
+        )
         return result.to(dtype=self.weight.dtype)

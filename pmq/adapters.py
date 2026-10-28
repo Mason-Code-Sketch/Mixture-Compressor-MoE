@@ -8,7 +8,7 @@ import torch
 
 
 _FUSED_PATTERN = re.compile(r"model\.layers\.(\d+)\.mlp")
-_MIXTRAL_PATTERN = re.compile(r"model\.layers\.(\d+)\.block_sparse_moe")
+_MIXTRAL_PATTERN = re.compile(r"model\.layers\.(\d+)\.(?:block_sparse_moe|mlp)")
 
 
 class PmqMoeAdapter:
@@ -61,13 +61,25 @@ class PmqMoeAdapter:
                 weights = weights / weights.sum(dim=-1, keepdim=True)
             return indices, weights
         if isinstance(output, (tuple, list)) and len(output) >= 3:
-            return output[2].detach(), output[1].detach()
+            # Official DeepSeek: (indices, weights, auxiliary_loss).
+            # Native HF fused routers: (logits, weights, indices).
+            if isinstance(output[0], torch.Tensor) and not output[0].is_floating_point():
+                indices, weights = output[0], output[1]
+            else:
+                indices, weights = output[2], output[1]
+            if not isinstance(indices, torch.Tensor) or not isinstance(weights, torch.Tensor):
+                raise TypeError("native router did not return indices and weights")
+            return indices.detach(), weights.detach()
         raise TypeError(f"unsupported native router output: {type(output)!r}")
 
     def expert_weights(self, module, expert: int) -> dict[str, torch.Tensor]:
-        if self.architecture == "mixtral":
+        if self.architecture == "mixtral" and isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
             item = module.experts[int(expert)]
             return {name: getattr(item, name).weight.detach() for name in ("w1", "w2", "w3")}
+        if isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
+            item = module.experts[int(expert)]
+            return {name: getattr(item, name).weight.detach()
+                    for name in ("gate_proj", "up_proj", "down_proj")}
         gate_up = module.experts.gate_up_proj[int(expert)].detach()
         gate, up = gate_up.chunk(2, dim=0)
         return {
@@ -78,7 +90,13 @@ class PmqMoeAdapter:
 
     def set_expert_weights(self, module, expert: int, weights: dict[str, torch.Tensor]) -> None:
         with torch.no_grad():
-            if self.architecture == "mixtral":
+            if self.architecture == "mixtral" and isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
+                item = module.experts[int(expert)]
+                for name, value in weights.items():
+                    target = getattr(item, name).weight
+                    target.copy_(value.to(target.device, dtype=target.dtype))
+                return
+            if isinstance(module.experts, (torch.nn.ModuleList, list, tuple)):
                 item = module.experts[int(expert)]
                 for name, value in weights.items():
                     target = getattr(item, name).weight

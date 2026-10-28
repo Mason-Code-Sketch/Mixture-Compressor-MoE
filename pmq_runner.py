@@ -11,20 +11,22 @@ import torch
 from pmq.adapters import PmqMoeAdapter
 from pmq.allocation import build_loss_by_layer, solve_pmq_layers, tied_projection_plan
 from pmq.config import load_protocol_config
-from pmq.evaluate import evaluate_pmq_plan
+from pmq.evaluate import evaluate_pmq_plan, quantize_pmq_plan, evaluate_saved_ppl, validate_checkpoint
 from pmq.factors import collect_pmq_factors, save_pmq_factors
-from pmq.runtime import load_model_config
+from pmq.runtime import load_model_config, load_tokenizer
+from pmq.artifacts import sha256_file, write_json
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Standalone PMQ protocol runner")
     parser.add_argument("--config", required=True, help="PMQ model YAML")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--phase", choices=("factors", "allocate", "evaluate"), required=True)
+    parser.add_argument("--phase", choices=("factors", "allocate", "quantize", "ppl", "zeroshot", "evaluate"), required=True)
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--factors-path", default=None)
     parser.add_argument("--allocation-path", default=None)
     parser.add_argument("--average-bit", type=float, default=None)
+    parser.add_argument("--saving-path", default=None, help="Saved PMQ checkpoint directory")
     return parser.parse_args(argv)
 
 
@@ -123,19 +125,38 @@ def main(argv=None):
         )
         print(f"[pmq] allocation saved to {output}", flush=True)
         return
-    if args.allocation_path is None:
-        if args.average_bit is None:
-            raise ValueError("evaluate requires --allocation-path or --average-bit")
-        allocation_path = _allocation_path(output_dir, args.average_bit, None)
+    if args.saving_path:
+        checkpoint = Path(args.saving_path)
+    elif args.average_bit is not None:
+        checkpoint = output_dir / f"avg{args.average_bit:g}"
+    elif args.allocation_path:
+        checkpoint = Path(args.allocation_path).parent
     else:
-        allocation_path = Path(args.allocation_path)
-    output = evaluate_pmq_plan(
-        protocol,
-        allocation_path=allocation_path,
-        seed=args.seed,
-        output_dir=allocation_path.parent,
-    )
-    print(f"[pmq] evaluation saved to {output}", flush=True)
+        raise ValueError("provide --saving-path, --average-bit or --allocation-path")
+    if args.phase in {"quantize", "evaluate"}:
+        if args.allocation_path is None and args.average_bit is None:
+            raise ValueError("quantization requires --allocation-path or --average-bit")
+        allocation_path = _allocation_path(output_dir, args.average_bit, args.allocation_path)
+        function = quantize_pmq_plan if args.phase == "quantize" else evaluate_pmq_plan
+        output = function(protocol, allocation_path=allocation_path, seed=args.seed, output_dir=checkpoint)
+    elif args.phase == "ppl":
+        output = evaluate_saved_ppl(protocol, checkpoint_dir=checkpoint, seed=args.seed)
+    else:
+        from pmq.packed import load_packed_model
+        from pmq.zeroshot import evaluate_seven
+        from pmq.artifacts import validate_provenance
+        identity = validate_checkpoint(checkpoint)
+        validate_provenance(protocol, identity["provenance"], seed=args.seed)
+        if not (checkpoint / "evaluation.json").exists():
+            raise ValueError("PPL result is required before setting completion")
+        if (checkpoint / "complete.json").exists():
+            raise FileExistsError("setting completion already exists")
+        output = evaluate_seven(load_packed_model(checkpoint), load_tokenizer(checkpoint), checkpoint, seed=args.seed)
+        write_json(checkpoint / "complete.json", {"status": "complete", "method": "pmq",
+            "ppl_sha256": sha256_file(checkpoint / "evaluation.json"),
+            "zeroshot_sha256": sha256_file(output),
+            "checkpoint_sha256": sha256_file(checkpoint / "qmodel.pt")})
+    print(f"[pmq] output saved to {output}", flush=True)
 
 
 if __name__ == "__main__":
