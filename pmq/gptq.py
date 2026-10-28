@@ -6,6 +6,10 @@ import math
 
 import torch
 
+from pmq.hessian import inverse_hessian_factor
+from pmq.packed import pack_matrix
+from utils.quantizer_moe import Quantizer
+
 
 def _quantize_uniform(
     values: torch.Tensor,
@@ -29,12 +33,12 @@ def _quantize_uniform(
 def _mcmoe_params(
     weight: torch.Tensor,
     bits: int,
+    *,
+    mse: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Use the original PMQ FP16 parameter solver with the existing MSE search."""
-    from utils.quantizer_moe import Quantizer
-
+    """Solve the selected grid with PMQ native FP16 parameter arithmetic."""
     quantizer = Quantizer()
-    quantizer.configure(bits, perchannel=True, sym=False, mse=True, pack=True)
+    quantizer.configure(bits, perchannel=True, sym=False, mse=mse, pack=True)
     quantizer.find_params(weight, weight=True)
     return quantizer.scale.flatten(), quantizer.zero.flatten()
 
@@ -42,9 +46,12 @@ def _mcmoe_params(
 class TensorGPTQ:
     """Apply the repository's GPTQ update to one 2-D weight tensor."""
 
-    def __init__(self, weight: torch.Tensor, *, bits: int):
+    def __init__(self, weight: torch.Tensor, *, bits: int, mse: bool = True):
         if weight.ndim != 2:
             raise ValueError(f"GPTQ requires a matrix weight, got {tuple(weight.shape)}")
+        if not isinstance(mse, bool):
+            raise ValueError("PMQ MSE must be boolean")
+        self.mse = mse
         self.weight = weight.detach()
         self.bits = int(bits)
         self.columns = int(weight.shape[1])
@@ -75,7 +82,6 @@ class TensorGPTQ:
         weight = self.weight.float().clone()
         hessian = self.hessian
         self.hessian = None
-        from pmq.hessian import inverse_hessian_factor
         hessian = inverse_hessian_factor(hessian, percdamp)
         denom_floor = torch.clamp(
             torch.diag(hessian).abs().mean() * 1e-6,
@@ -100,6 +106,7 @@ class TensorGPTQ:
                     scale, zero = _mcmoe_params(
                         weight[:, start : start + block_size],
                         self.bits,
+                        mse=self.mse,
                     )
                     group_scales.append(scale.detach().clone())
                     group_zeros.append(zero.detach().clone())
@@ -127,7 +134,6 @@ class TensorGPTQ:
                 errors[:, offset] = error
             result[:, start:end] = quantized
             weight[:, end:] -= errors.matmul(hessian[start:end, end:])
-        from pmq.packed import pack_matrix
         self.packed_state = pack_matrix(
             codes, torch.stack(group_scales, dim=1), torch.stack(group_zeros, dim=1),
             bits=self.bits, group_size=group_size, dtype=self.weight.dtype,

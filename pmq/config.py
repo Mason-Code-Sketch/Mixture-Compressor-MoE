@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 
 import yaml
@@ -50,6 +52,7 @@ def load_protocol_config(path: str | Path) -> ProtocolConfig:
     data = yaml.safe_load(source_path.read_text())
     if not isinstance(data, dict):
         raise ValueError(f"configuration must be a mapping: {source_path}")
+    resolve_quantization_settings(data.get("quantization", {}))
     model = data.get("model", {})
     dataset = data.get("dataset", {})
     factors = dataset.get("factors", {})
@@ -89,3 +92,49 @@ def load_protocol_config(path: str | Path) -> ProtocolConfig:
             for key, value in evaluation_names.items()
         },
     )
+
+
+def resolve_quantization_settings(settings):
+    """Validate supported PMQ controls before any model or calibration work."""
+    defaults = {
+        "group_size": 128, "percdamp": 0.01, "mse": True,
+        "candidate_quantizer": "normal", "standard_linear_bit": 4, "router_bit": 16,
+    }
+    if not isinstance(settings, dict):
+        raise ValueError("PMQ quantization settings must be a mapping")
+    unknown = set(settings) - set(defaults)
+    if unknown:
+        raise ValueError(f"Unknown PMQ quantization settings: {sorted(unknown)}")
+    resolved = dict(defaults, **settings)
+    if not isinstance(resolved["mse"], bool):
+        raise ValueError("PMQ quantization.mse must be boolean")
+    if (
+        isinstance(resolved["group_size"], bool)
+        or not isinstance(resolved["group_size"], int)
+        or resolved["group_size"] < 1
+    ):
+        raise ValueError("PMQ group_size must be a positive integer")
+    damping = resolved["percdamp"]
+    if (
+        isinstance(damping, bool)
+        or not isinstance(damping, Real)
+        or not math.isfinite(damping)
+        or damping <= 0
+    ):
+        raise ValueError("PMQ percdamp must be finite and positive")
+    if resolved["candidate_quantizer"] != "normal":
+        raise ValueError("PMQ supports only candidate_quantizer=normal")
+    for key in ("standard_linear_bit", "router_bit"):
+        if isinstance(resolved[key], bool) or resolved[key] not in (1, 2, 3, 4, 8, 16):
+            raise ValueError(f"Unsupported PMQ {key}: {resolved[key]}")
+    return resolved
+
+
+def validate_native_cli_args(args):
+    """Reject native CLI placeholders instead of silently ignoring requests."""
+    if args.load_quantized or args.multigpu:
+        raise ValueError("Use inference.py or pmq_runner.py for checkpoint loading and model placement")
+    if args.tasks or args.num_fewshot != 0:
+        raise ValueError("Use pmq_runner.py --phase zeroshot for downstream evaluation")
+    if args.batch_size != 1:
+        raise ValueError("The original PMQ quantization entry supports only batch_size=1")

@@ -23,7 +23,7 @@ class QuantizerMseTest(unittest.TestCase):
                 for packed in (False, True):
                     with self.subTest(bits=bits, symmetric=symmetric, packed=packed):
                         quantizer = Quantizer()
-                        quantizer.configure(bits, sym=symmetric, mse=False, pack=packed)
+                        quantizer.configure(bits, perchannel=True, sym=symmetric, mse=False, pack=packed)
                         with patch.object(quantizer, '_quantize', side_effect=AssertionError(
                             'Disabled MSE must not quantize search candidates'
                         )):
@@ -32,6 +32,8 @@ class QuantizerMseTest(unittest.TestCase):
                             expected_scale = torch.tensor(
                                 [4., 4 / 3, 8 / 3, 1.], dtype=torch.float16
                             ).reshape(-1, 1)
+                            if symmetric:
+                                expected_scale = torch.tensor([16 / 3, 8 / 3, 16 / 3, 1.], dtype=torch.float16).reshape(-1, 1)
                             expected_zero = torch.full_like(expected_scale, 2.) if symmetric else torch.tensor(
                                 [1., 0., 3., 0.], dtype=torch.float16
                             ).reshape(-1, 1)
@@ -43,7 +45,7 @@ class QuantizerMseTest(unittest.TestCase):
         from utils.quantizer_moe import normal_quantize
         for packed in (False, True):
             quantizer = Quantizer()
-            quantizer.configure(2, sym=False, pack=packed)
+            quantizer.configure(2, perchannel=True, sym=False, pack=packed)
             with patch("utils.quantizer_moe.normal_quantize", wraps=normal_quantize) as search:
                 quantizer.find_params(self.weights, weight=True)
             self.assertEqual(search.call_count, 80)
@@ -68,7 +70,7 @@ class QuantizerMseTest(unittest.TestCase):
             quantizers = []
             for enabled in (False, True):
                 quantizer = Quantizer()
-                quantizer.configure(1, sym=False, mse=enabled, pack=packed)
+                quantizer.configure(1, perchannel=True, sym=False, mse=enabled, pack=packed)
                 quantizer.find_params(self.weights, weight=True)
                 quantizers.append(quantizer)
             torch.testing.assert_close(quantizers[0].scale, quantizers[1].scale, rtol=0, atol=0)

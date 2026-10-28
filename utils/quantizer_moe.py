@@ -1,4 +1,4 @@
-from numpy import sign
+import math
 import torch
 import torch.nn as nn
 
@@ -81,12 +81,26 @@ class Quantizer(nn.Module):
 
     def __init__(self, shape=1):
         super(Quantizer, self).__init__()
+        self._params_ready = False
         self.register_buffer('maxq', torch.tensor(0, dtype=torch.float16))
         self.register_buffer('scale', torch.zeros(shape, dtype=torch.float16))
         self.register_buffer('zero', torch.zeros(shape, dtype=torch.float16))
 
-    def configure(self, bits, perchannel=False, sym=True, mse=True, norm=2.4, grid=100, maxshrink=.8, trits=False, pack=False):
+    def configure(self, bits, perchannel=False, sym=False, mse=True, norm=2.4, grid=100, maxshrink=.8, trits=False, pack=False):
 
+        if trits:
+            raise ValueError("Ternary quantization is not supported by PMQ packing")
+        if isinstance(bits, bool) or not isinstance(bits, int) or not 1 <= bits <= 8:
+            raise ValueError("PMQ bits must be an integer in 1..8")
+        if any(not isinstance(value, bool) for value in (perchannel, sym, mse, pack)):
+            raise ValueError("perchannel, sym, mse and pack must be boolean")
+        if not isinstance(grid, int) or isinstance(grid, bool) or grid < 1:
+            raise ValueError("MSE grid must be a positive integer")
+        if not math.isfinite(maxshrink) or not 0 < maxshrink < 1 or int(maxshrink * grid) < 1:
+            raise ValueError("MSE shrink range must contain at least one positive factor")
+        if not math.isfinite(norm) or norm <= 0:
+            raise ValueError("MSE norm must be finite and positive")
+        self._params_ready = False
         self.maxq = torch.tensor(2**bits - 1)
         self.perchannel = perchannel
         self.sym = sym
@@ -94,8 +108,6 @@ class Quantizer(nn.Module):
         self.norm = norm
         self.grid = grid
         self.maxshrink = maxshrink
-        if trits:
-            self.maxq = torch.tensor(-1)
         self.scale = torch.zeros_like(self.scale, dtype=torch.float16)
         self.pack = pack
 
@@ -114,111 +126,80 @@ class Quantizer(nn.Module):
         return scale * (q - zero) if not self.pack else q
 
     def find_params(self, w, weight=False):
-        perchannel = True
-        weight = True
-        dev = w.device
-        maxq = self.maxq
-        scale = torch.zeros(1, dtype=torch.float16)
-        zero = torch.zeros(1, dtype=torch.float16)
+        if not isinstance(weight, bool):
+            raise ValueError("weight must be boolean")
         shape = w.shape
-
-        x = w.clone().to(torch.float16)
-
-        if self.maxq == 1:
-            scale, zero = binary_scale(x)
-            if dev != scale.device:
-                scale=scale.to(dev)
-                zero=zero.to(dev)
-                maxq=maxq.to(dev)
-        # elif (self.maxq == 3) and (not self.pack):
-        #     scale, r_scale, zero = residual_scale(x, order=2)
-        #     if dev != scale.device:
-        #         scale=scale.to(dev)
-        #         r_scale=r_scale.to(dev)
-        #         zero=zero.to(dev)
-        #         maxq=maxq.to(dev)
+        reference = w.detach()
+        if self.perchannel:
+            if weight:
+                reference = reference.flatten(1)
+            elif len(shape) == 4:
+                reference = reference.permute(1, 0, 2, 3).flatten(1)
+            elif len(shape) == 3:
+                reference = reference.reshape(-1, shape[-1]).t()
+            elif len(shape) == 2:
+                reference = reference.t()
+            else:
+                raise ValueError("Per-channel quantization requires a 2-D, 3-D or 4-D tensor")
         else:
-            if dev != scale.device:
-                scale=scale.to(dev)
-                zero=zero.to(dev)
-                maxq=maxq.to(dev)
-            if perchannel:
-                if weight:
-                    x = x.flatten(1)
-                else:
-                    if len(shape) == 4:
-                        x = x.permute([1, 0, 2, 3])
-                        x = x.flatten(1)
-                    if len(shape) == 3:
-                        x = x.reshape((-1, shape[-1])).t()
-                    if len(shape) == 2:
-                        x = x.t()
-            else:
-                x = x.flatten().unsqueeze(0)
-            tmp = torch.zeros(x.shape[0], device=dev, dtype=torch.float16)
-            xmin = torch.minimum(x.min(1)[0], tmp)
-            xmax = torch.maximum(x.max(1)[0], tmp)
+            reference = reference.flatten().unsqueeze(0)
 
-            tmp = (xmin == 0) & (xmax == 0)
-            xmin[tmp] = -1
-            xmax[tmp] = +1
+        x = reference.to(torch.float16)
+        if not torch.isfinite(x).all():
+            raise ValueError("PMQ parameters require weights representable in FP16")
+        maxq = self.maxq.to(w.device)
+        if maxq == 1:
+            scale, zero = binary_scale(x)
+        else:
+            tmp = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+            xmin = torch.minimum(x.amin(1), tmp)
+            xmax = torch.maximum(x.amax(1), tmp)
+            if self.sym:
+                xmax = torch.maximum(xmin.abs(), xmax)
+                xmin = -xmax
+            empty = (xmin == 0) & (xmax == 0)
+            xmin = torch.where(empty, -torch.ones_like(xmin), xmin)
+            xmax = torch.where(empty, torch.ones_like(xmax), xmax)
             scale = (xmax - xmin) / maxq
-            zero = -xmin / scale
-            
-            if maxq < 0:
-                scale = xmax
-                zero = xmin
-            else:
-                scale = (xmax - xmin) / maxq
-                if self.sym:
-                    zero = torch.full_like(scale, (maxq + 1) / 2, dtype=torch.float16)
-                else:
-                    zero = -xmin / scale
+            zero = torch.full_like(scale, (maxq + 1) / 2) if self.sym else -xmin / scale
+
             if self.mse:
-                best = torch.full([x.shape[0]], float('inf'), device=dev, dtype=torch.float16)
+                best = torch.full_like(scale, float('inf'))
                 for index in range(int(self.maxshrink * self.grid)):
                     p = 1 - index / self.grid
                     xmin1 = p * xmin
                     xmax1 = p * xmax
                     scale1 = (xmax1 - xmin1) / maxq
-                    # zero1 = torch.round(-xmin1 / scale1) if not self.sym else zero
-                    zero1 = -xmin1 / scale1
-
-                    # Search always scores one dequantization, including pack=False.
-                    w_q = normal_quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), maxq)
-                    w_q = scale1.unsqueeze(1) * (w_q - zero1.unsqueeze(1))
-
-                    w_q -= w
-                    w_q.abs_()
-                    w_q.pow_(self.norm)
-                
-                    err = torch.sum(w_q, 1)
-                    tmp = err < best
-                    if torch.any(tmp):
-                        # _p[tmp] = p
-                        best[tmp] = err[tmp]
-                        scale[tmp] = scale1[tmp]
-                        zero[tmp] = zero1[tmp]
-        if self.maxq > 1:
-            empty = (x == 0).all(dim=1)
+                    zero1 = zero if self.sym else -xmin1 / scale1
+                    codes = normal_quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), maxq)
+                    error = scale1.unsqueeze(1) * (codes - zero1.unsqueeze(1))
+                    error -= reference
+                    error.abs_().pow_(self.norm)
+                    error = error.sum(1)
+                    improved = error < best
+                    best[improved] = error[improved]
+                    scale[improved] = scale1[improved]
+                    if not self.sym:
+                        zero[improved] = zero1[improved]
             scale[empty] = 1
             zero[empty] = 0
-        if not perchannel:
-            if weight:
-                tmp = shape[0]
-            else:
-                tmp = shape[1] if len(shape) != 3 else shape[2]
-            scale = scale.repeat(tmp)
-            zero = zero.repeat(tmp)
 
+        if not self.perchannel:
+            channels = shape[0] if weight else shape[1] if len(shape) != 3 else shape[2]
+            scale = scale.repeat(channels)
+            zero = zero.repeat(channels)
         if weight:
-            shape = [-1] + [1] * (len(shape) - 1)
-            scale = scale.reshape(shape)
-            zero = zero.reshape(shape)
-
-        self.scale = scale
-        self.zero = zero
+            output_shape = [-1] + [1] * (len(shape) - 1)
+        elif len(shape) == 4:
+            output_shape = (1, -1, 1, 1)
+        elif len(shape) == 3:
+            output_shape = (1, 1, -1)
+        else:
+            output_shape = (1, -1)
+        self.scale = scale.reshape(output_shape)
+        self.zero = zero.reshape(output_shape)
         self.maxq = maxq
+        self._params_ready = True
 
     def quantize(self, x):
         if self.ready():
@@ -231,7 +212,10 @@ class Quantizer(nn.Module):
         return self.maxq > 0
 
     def ready(self):
-        return torch.all(self.scale != 0)
+        if not self._params_ready:
+            return False
+        valid_scale = self.scale >= 0 if self.maxq == 1 else self.scale > 0
+        return bool(valid_scale.all() and torch.isfinite(self.scale).all() and torch.isfinite(self.zero).all())
 
 
 # random_tensor = torch.randn(10, 10)

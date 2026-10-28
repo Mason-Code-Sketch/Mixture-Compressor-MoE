@@ -6,6 +6,7 @@ import torch.nn as nn
 import transformers
 from utils import mixed_quantizer, quantizer, quantizer_moe
 from texttable import Texttable
+from pmq.hessian import inverse_hessian_factor
 from utils.reconstruct import torch_snr_error
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -114,7 +115,6 @@ class GPTQ:
         Losses = torch.zeros_like(W)
         Q = torch.zeros_like(W)
 
-        from pmq.hessian import inverse_hessian_factor
         H = inverse_hessian_factor(H, percdamp)
         Hinv = H
 
