@@ -61,6 +61,8 @@ class PmqProtocolTest(unittest.TestCase):
                 "pmq:\n  candidate_bits: [1, 2, 3]\n"
             )
             loaded = load_protocol_config(config)
+            self.assertEqual(loaded.data["quantization"]["group_size"], 128)
+            self.assertTrue(loaded.data["quantization"]["mse"])
             self.assertEqual(loaded.model_path, (assets / "models" / "test").resolve())
             self.assertEqual(loaded.factor_path, (assets / "datasets" / "c4").resolve())
             self.assertEqual(loaded.gptq_calibration_path, (assets / "datasets" / "wiki").resolve())

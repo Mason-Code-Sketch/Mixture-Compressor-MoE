@@ -52,7 +52,7 @@ def load_protocol_config(path: str | Path) -> ProtocolConfig:
     data = yaml.safe_load(source_path.read_text())
     if not isinstance(data, dict):
         raise ValueError(f"configuration must be a mapping: {source_path}")
-    resolve_quantization_settings(data.get("quantization", {}))
+    data["quantization"] = resolve_quantization_settings(data.get("quantization", {}))
     model = data.get("model", {})
     dataset = data.get("dataset", {})
     factors = dataset.get("factors", {})
@@ -132,6 +132,12 @@ def resolve_quantization_settings(settings):
 
 def validate_native_cli_args(args):
     """Reject native CLI placeholders instead of silently ignoring requests."""
+    if getattr(args, "use_flash_attention_2", False):
+        if args.attn_implementation not in ("eager", "flash_attention_2"):
+            raise ValueError("Conflicting attention implementation and --use_flash_attention_2")
+        args.attn_implementation = "flash_attention_2"
+    if getattr(args, "r", 7) != 7:
+        raise ValueError("The native PMQ entry does not implement expert pruning (--r)")
     if args.load_quantized or args.multigpu:
         raise ValueError("Use inference.py or pmq_runner.py for checkpoint loading and model placement")
     if args.tasks or args.num_fewshot != 0:
