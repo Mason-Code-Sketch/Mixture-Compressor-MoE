@@ -1,6 +1,6 @@
 model:
-  name: Qwen3-30B-A3B-Base
-  id: Qwen3-30B-A3B-Base
+  name: Qwen3-30B-A3B
+  id: Qwen3-30B-A3B
   architecture: qwen3_moe
   dtype: float16
   attn_implementation: eager
@@ -57,4 +57,4 @@ pmq:
   normalize_factors: true
   scale_factor: 1000.0
   ilp_backend: highs
-  output_dir: results/qwen3-30b-a3b-base
+  output_dir: results/qwen3-30b-a3b

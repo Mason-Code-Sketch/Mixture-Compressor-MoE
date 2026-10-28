@@ -364,9 +364,9 @@ retain their existing eager configuration. `zeroshot.json` records the actual
 `attn_implementation`; saved checkpoint settings and weights are preserved.
 
 ```sh
-python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase quantize --average-bit 2.5
-python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase ppl --average-bit 2.5
-python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase zeroshot --average-bit 2.5
+python pmq_runner.py --config configs/qwen3-30b-a3b.yaml --phase quantize --average-bit 2.5
+python pmq_runner.py --config configs/qwen3-30b-a3b.yaml --phase ppl --average-bit 2.5
+python pmq_runner.py --config configs/qwen3-30b-a3b.yaml --phase zeroshot --average-bit 2.5
 ```
 
 The `quantize` phase uses an existing allocation. Both evaluation JSONs record
