@@ -62,9 +62,11 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
             main(common + ["--phase", "zeroshot"])
             evaluated = wrapped.call_args.kwargs["pretrained"]
             assert any(isinstance(module, GroupedExperts) for module in evaluated.modules())
+            assert evaluated.config._attn_implementation == "sdpa"
     assert sha256_file(checkpoint / "qmodel.pt") == digest
     ppl = json.loads((checkpoint / "evaluation.json").read_text())
     seven = json.loads((checkpoint / "zeroshot.json").read_text())
+    assert seven["experiment"]["attn_implementation"] == "sdpa"
     assert ppl["evaluation_backend"] == seven["experiment"]["evaluation_backend"] == "grouped_cached"
     assert ppl["checkpoint_sha256"] == seven["experiment"]["checkpoint_sha256"] == digest
     assert json.loads((checkpoint / "complete.json").read_text())["status"] == "complete"

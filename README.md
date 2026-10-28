@@ -358,6 +358,10 @@ phases reload the same `qmodel.pt`; FP16/BF16 evaluation decodes projections onc
 and uses `torch._grouped_mm` for routed experts on DeepSeek-V2-Lite, Qwen1.5-MoE,
 Qwen3-MoE and Mixtral. Native router, shared-expert and accumulation behavior is
 preserved. These evaluation-only buffers are not saved back to the checkpoint.
+Seven-task model loading explicitly uses SDPA for Qwen1.5-MoE, Qwen3-MoE and
+Mixtral, and eager attention for DeepSeek-V2-Lite. Scoring, quantization and PPL
+retain their existing eager configuration. `zeroshot.json` records the actual
+`attn_implementation`; saved checkpoint settings and weights are preserved.
 
 ```sh
 python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase quantize --average-bit 2.5
