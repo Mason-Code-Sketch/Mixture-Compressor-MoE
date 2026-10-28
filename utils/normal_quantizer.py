@@ -9,8 +9,8 @@ def binary(x):
     binary_slice = torch.where(x_ >= 0, 1, -1)
     binary_slice = binary_slice/2 + 0.5
 
-    scale_tensor = scale_tensor.unsqueeze(1).expand(-1, 128)
-    zero = zero.unsqueeze(1).expand(-1, 128)
+    scale_tensor = scale_tensor.unsqueeze(1).expand(-1, x.shape[1])
+    zero = zero.unsqueeze(1).expand(-1, x.shape[1])
     return scale_tensor * (binary_slice - zero)
 
 @torch.no_grad()

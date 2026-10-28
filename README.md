@@ -304,6 +304,12 @@ python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase ppl --aver
 python pmq_runner.py --config configs/qwen3-30b-a3b-base.yaml --phase zeroshot --average-bit 2.5
 ```
 
+The native runner keeps `experts_act_frequency.pkl`, `experts_act_weight.pkl`
+and `experts_quant_loss.pkl` under the model output directory. Allocations use
+`experts_mixture_bit_selection/experts_mixture_bitwidth_combination_avg<bit>bit.pkl`;
+JSON companions hold provenance and completion metadata. Packed checkpoints and
+evaluation reports remain under `avg<bit>/`.
+
 The `quantize` phase uses an existing allocation. Both evaluation JSONs record
 `evaluation_backend` and the source checkpoint SHA256. FP32 CPU validation models
 retain the original PyTorch backend. Existing checkpoint/result files are never
