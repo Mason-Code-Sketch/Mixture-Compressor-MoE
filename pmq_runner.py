@@ -142,8 +142,7 @@ def main(argv=None):
     elif args.phase == "ppl":
         output = evaluate_saved_ppl(protocol, checkpoint_dir=checkpoint, seed=args.seed)
     else:
-        from pmq.packed import load_packed_model
-        from pmq.zeroshot import evaluate_seven
+        from pmq.zeroshot import evaluate_seven, load_zeroshot_model
         from pmq.artifacts import validate_provenance
         identity = validate_checkpoint(checkpoint)
         validate_provenance(protocol, identity["provenance"], seed=args.seed)
@@ -151,7 +150,7 @@ def main(argv=None):
             raise ValueError("PPL result is required before setting completion")
         if (checkpoint / "complete.json").exists():
             raise FileExistsError("setting completion already exists")
-        output = evaluate_seven(load_packed_model(checkpoint), load_tokenizer(checkpoint), checkpoint, seed=args.seed)
+        output = evaluate_seven(load_zeroshot_model(checkpoint), load_tokenizer(checkpoint), checkpoint, seed=args.seed)
         write_json(checkpoint / "complete.json", {"status": "complete", "method": "pmq",
             "ppl_sha256": sha256_file(checkpoint / "evaluation.json"),
             "zeroshot_sha256": sha256_file(output),

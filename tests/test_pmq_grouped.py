@@ -123,4 +123,20 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, tmp_path):
             for _ in range(2):
                 torch.testing.assert_close(reloaded(ids, use_cache=False).logits, reference, rtol=0, atol=0)
             assert len(calls) == count
+    # PPL keeps checkpoint attention; zeroshot constructs its own attention classes.
+    assert reloaded.config._attn_implementation == "eager"
+    from pmq.zeroshot import load_zeroshot_model
+    zeroshot = load_zeroshot_model(tmp_path, device_map="cpu")
+    expected_attention = "eager" if kind == "deepseek_v2" else "sdpa"
+    assert zeroshot.config._attn_implementation == expected_attention
+    prepare_evaluation_model(zeroshot, backend="grouped_cached")
+    with torch.inference_mode(), patch("torch.nn.functional.scaled_dot_product_attention",
+            wraps=nn.functional.scaled_dot_product_attention) as sdpa:
+        logits = zeroshot(ids, use_cache=False).logits
+    assert torch.isfinite(logits).all()
+    assert (sdpa.call_count > 0) == (expected_attention == "sdpa")
+    # The override never changes saved attention or quantized weights.
+    import json
+    saved = json.loads((tmp_path / "config.json").read_text())
+    assert saved["pmq_quantization"]["attn_implementation"] == "eager"
     assert sha256_file(tmp_path / "qmodel.pt") == digest

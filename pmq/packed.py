@@ -164,7 +164,7 @@ def save_packed_model(model, tokenizer, directory):
     tokenizer.save_pretrained(str(directory))
 
 
-def load_packed_model(directory, *, device_map="auto", dtype=None):
+def load_packed_model(directory, *, device_map="auto", dtype=None, attn_implementation=None):
     """Rebuild the native skeleton and load the upstream per-module state mapping."""
     from accelerate import init_empty_weights
     from transformers import AutoModelForCausalLM
@@ -176,7 +176,8 @@ def load_packed_model(directory, *, device_map="auto", dtype=None):
     if not metadata or metadata.get("format_version") != 1:
         raise ValueError("checkpoint is not a PMQ native packed model")
     kwargs = {"trust_remote_code": metadata.get("trust_remote_code", False),
-              "attn_implementation": metadata["attn_implementation"]}
+              "attn_implementation": (attn_implementation if attn_implementation is not None
+                                      else metadata["attn_implementation"])}
     if metadata.get("experts_implementation"):
         kwargs["experts_implementation"] = metadata["experts_implementation"]
     with init_empty_weights():

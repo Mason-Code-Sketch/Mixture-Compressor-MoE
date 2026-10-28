@@ -12,6 +12,21 @@ from pmq.monitor import LOGGER
 SEVEN_TASKS = ("piqa", "arc_easy", "arc_challenge", "hellaswag", "winogrande", "mathqa", "mmlu")
 
 
+def load_zeroshot_model(checkpoint_dir, *, device_map="auto", dtype=None):
+    """Choose seven-task attention when constructing the saved model skeleton."""
+    from pmq.runtime import load_model_config
+    from pmq.packed import load_packed_model
+
+    config = load_model_config(checkpoint_dir)
+    attention = {"deepseek_v2": "eager", "qwen2_moe": "sdpa",
+                 "qwen3_moe": "sdpa", "mixtral": "sdpa"}.get(config.model_type)
+    model = load_packed_model(checkpoint_dir, device_map=device_map, dtype=dtype,
+                              attn_implementation=attention)
+    if attention is not None and model.config._attn_implementation != attention:
+        raise RuntimeError(f"seven-task attention must be {attention}")
+    return model
+
+
 def summarize_seven(raw):
     """Prefer acc_norm and include the MMLU group exactly once."""
     selected = {}
@@ -42,7 +57,9 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
     backend = prepare_evaluation_model(model)
     lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size="auto", max_batch_size=8,
               add_bos_token=False, parallelize=True)
-    LOGGER.info("SEVEN_START tasks=%s num_fewshot=0 add_bos_token=False", SEVEN_TASKS)
+    attention = getattr(getattr(model, "config", None), "_attn_implementation", None)
+    LOGGER.info("SEVEN_START tasks=%s num_fewshot=0 add_bos_token=False attention=%s",
+                SEVEN_TASKS, attention)
     raw = evaluator.simple_evaluate(
         model=lm, tasks=list(SEVEN_TASKS), num_fewshot=0, limit=None,
         apply_chat_template=False, log_samples=False,
@@ -58,7 +75,8 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
                        "checkpoint_sha256": sha256_file(checkpoint_dir / "qmodel.pt"),
                        "seed": seed, "tasks": list(SEVEN_TASKS), "num_fewshot": 0,
                        "add_bos_token": False, "apply_chat_template": False, "limit": None,
-                       "batch_size": "auto", "max_batch_size": 8, "evaluation_backend": backend},
+                       "batch_size": "auto", "max_batch_size": 8, "evaluation_backend": backend,
+                       "attn_implementation": attention},
         "summary": summary, "harness": raw,
     })
     LOGGER.info("SEVEN_COMPLETE mean=%.8f", summary["mean"])
