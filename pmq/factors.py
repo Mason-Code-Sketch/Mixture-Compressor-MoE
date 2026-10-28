@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 
 from pmq.artifacts import provenance, sha256_file, write_json, write_pickle
-from pmq.monitor import LOGGER, progress
+from pmq.monitor import LOGGER, progress, component
 from pmq.adapters import PmqMoeAdapter
 from pmq.config import ProtocolConfig
 from pmq.data import calibration_inputs
@@ -103,45 +103,48 @@ def _candidate_loss_for_layer(
 
 def collect_pmq_factors(protocol: ProtocolConfig, *, seed: int) -> tuple[PmqFactors, dict]:
     """Collect PMQ factors through the model's unmodified native forwards."""
-    tokenizer = load_tokenizer(protocol.model_path)
-    inputs = calibration_inputs(
-        tokenizer,
-        protocol.factor_path,
-        protocol.data["dataset"]["factors"],
-        samples=int(protocol.data["calibration"]["factors"]["samples"]),
-        seq_len=int(protocol.data["calibration"]["factors"]["seq_len"]),
-        seed=seed,
-    )
-    model = load_model(protocol)
+    with component("load_calibration"):
+        tokenizer = load_tokenizer(protocol.model_path)
+        inputs = calibration_inputs(
+            tokenizer,
+            protocol.factor_path,
+            protocol.data["dataset"]["factors"],
+            samples=int(protocol.data["calibration"]["factors"]["samples"]),
+            seq_len=int(protocol.data["calibration"]["factors"]["seq_len"]),
+            seed=seed,
+        )
+    with component("load_model"):
+        model = load_model(protocol)
     adapter = PmqMoeAdapter(protocol.architecture)
     modules = adapter.collect_moe_modules(model)
-    collector = NativeRoutingCollector(modules, adapter, model.config)
-    device = input_device(model)
-    try:
-        with torch.inference_mode():
-            for ids in inputs:
-                model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
-        routing = collector.close()
-    except Exception:
-        collector.close()
-        raise
+    with component("comp_stats"):
+        collector = NativeRoutingCollector(modules, adapter, model.config)
+        device = input_device(model)
+        try:
+            with torch.inference_mode():
+                for ids in inputs:
+                    model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
+            routing = collector.close()
+        except Exception:
+            collector.close()
+            raise
 
-    candidate_loss: dict[int, dict[int, dict[int, float]]] = {}
-    for position, (layer, module) in enumerate(sorted(modules.items()), 1):
-        LOGGER.info("FACTOR_LAYER_START layer=%s position=%s total=%s", layer, position, len(modules))
-        layer_inputs, layer_outputs = _capture_layer_io(model, module, inputs, device)
-        candidate_loss[layer] = _candidate_loss_for_layer(
-            module=module,
-            adapter=adapter,
-            inputs=layer_inputs,
-            outputs=layer_outputs,
-            bits=protocol.candidate_bits,
-            group_size=int(protocol.data["quantization"]["group_size"]),
-        )
-        del layer_inputs, layer_outputs
-        progress("FACTOR_LAYER_COMPLETE", position, len(modules), layer=layer)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        candidate_loss: dict[int, dict[int, dict[int, float]]] = {}
+        for position, (layer, module) in enumerate(sorted(modules.items()), 1):
+            LOGGER.info("FACTOR_LAYER_START layer=%s position=%s total=%s", layer, position, len(modules))
+            layer_inputs, layer_outputs = _capture_layer_io(model, module, inputs, device)
+            candidate_loss[layer] = _candidate_loss_for_layer(
+                module=module,
+                adapter=adapter,
+                inputs=layer_inputs,
+                outputs=layer_outputs,
+                bits=protocol.candidate_bits,
+                group_size=int(protocol.data["quantization"]["group_size"]),
+            )
+            del layer_inputs, layer_outputs
+            progress("FACTOR_LAYER_COMPLETE", position, len(modules), layer=layer)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     metadata = {
         "provenance": provenance(protocol, seed=seed),

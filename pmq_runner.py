@@ -16,7 +16,7 @@ from pmq.artifacts import provenance, sha256_file, write_json, write_pickle, val
 from pmq.config import load_protocol_config
 from pmq.evaluate import evaluate_pmq_plan, quantize_pmq_plan, evaluate_saved_ppl, validate_checkpoint
 from pmq.factors import collect_pmq_factors, save_pmq_factors
-from pmq.monitor import RunMonitor, LOGGER
+from pmq.monitor import RunMonitor, LOGGER, component
 from pmq.runtime import load_model_config, load_tokenizer
 
 
@@ -101,9 +101,10 @@ def _allocate(protocol, *, factors_path, output_dir, average_bit, budget_policy=
     adapter = PmqMoeAdapter(protocol.architecture)
     shared_units = adapter.shared_budget_units(load_model_config(protocol.model_path))
     policy = budget_policy or pmq_cfg.get("budget_policy", "strict")
-    assignments = solve_pmq_layers(losses, average_bit=average_bit, shared_units=shared_units,
-        shared_bit=int(pmq_cfg["shared_expert_bit"]), candidate_bits=bits,
-        backend=pmq_cfg.get("ilp_backend", "highs"), budget_policy=policy)
+    with component("solve_lp"):
+        assignments = solve_pmq_layers(losses, average_bit=average_bit, shared_units=shared_units,
+            shared_bit=int(pmq_cfg["shared_expert_bit"]), candidate_bits=bits,
+            backend=pmq_cfg.get("ilp_backend", "highs"), budget_policy=policy)
     native = {}
     for (layer, expert), bit in sorted(assignments.items()):
         native.setdefault(layer, {})[expert] = bit
@@ -131,7 +132,8 @@ def main(argv=None):
             if any((output_dir / name).exists() for name in ("experts_act_frequency.pkl", "factors_complete.json")):
                 raise FileExistsError("factor files already exist; reuse them for allocation")
             factors, metadata = collect_pmq_factors(protocol, seed=args.seed)
-            output = save_pmq_factors(output_dir, factors, metadata)
+            with component("save_factors"):
+                output = save_pmq_factors(output_dir, factors, metadata)
         elif args.phase == "allocate":
             if args.average_bit is None:
                 raise ValueError("allocate requires --average-bit")
@@ -159,7 +161,11 @@ def main(argv=None):
                     raise ValueError("PPL result is required before setting completion")
                 if (checkpoint / "complete.json").exists():
                     raise FileExistsError("setting completion already exists")
-                output = evaluate_seven(load_zeroshot_model(checkpoint), load_tokenizer(checkpoint), checkpoint, seed=args.seed)
+                with component("load_model"):
+                    model = load_zeroshot_model(checkpoint)
+                    tokenizer = load_tokenizer(checkpoint)
+                with component("evaluate_zeroshot"):
+                    output = evaluate_seven(model, tokenizer, checkpoint, seed=args.seed)
                 write_json(checkpoint / "complete.json", {"status": "complete", "method": "pmq",
                     "ppl_sha256": sha256_file(checkpoint / "evaluation.json"),
                     "zeroshot_sha256": sha256_file(output),

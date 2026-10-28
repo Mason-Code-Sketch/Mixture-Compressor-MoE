@@ -16,7 +16,7 @@ from pmq.adapters import PmqMoeAdapter
 from pmq.artifacts import provenance, sha256_file, write_json, validate_provenance
 from pmq.config import ProtocolConfig
 from pmq.data import evaluation_blocks
-from pmq.monitor import LOGGER, progress
+from pmq.monitor import LOGGER, progress, component
 from pmq.packed import save_packed_model, load_packed_model
 from pmq.quantize import apply_allocation
 from pmq.runtime import input_device, load_model, load_tokenizer
@@ -88,8 +88,9 @@ def quantize_pmq_plan(protocol, *, allocation_path, seed, output_dir):
         raise ValueError("allocation contains an unsupported bit")
     if allocation_metadata.get("provenance"):
         validate_provenance(protocol, allocation_metadata["provenance"], seed=seed)
-    tokenizer = load_tokenizer(protocol.model_path)
-    model = load_model(protocol)
+    with component("load_model"):
+        tokenizer = load_tokenizer(protocol.model_path)
+        model = load_model(protocol)
     adapter = PmqMoeAdapter(protocol.architecture)
     expected = {(layer, expert) for layer, module in adapter.collect_moe_modules(model).items()
                 for expert in range(adapter.num_experts(module))}
@@ -97,9 +98,11 @@ def quantize_pmq_plan(protocol, *, allocation_path, seed, output_dir):
         raise ValueError("allocation does not match the model's complete expert set")
     LOGGER.info("QUANTIZE_START checkpoint=%s expert_count=%s", output, len(allocation))
     start = perf_counter()
-    apply_allocation(model, adapter, allocation, protocol=protocol, seed=seed)
+    with component("quant_gptq"):
+        apply_allocation(model, adapter, allocation, protocol=protocol, seed=seed)
     seconds = perf_counter() - start
-    save_packed_model(model, tokenizer, output)
+    with component("save_checkpoint"):
+        save_packed_model(model, tokenizer, output)
     files = ["qmodel.pt", "config.json", "tokenizer_config.json"]
     metadata = {"status": "complete", "method": "pmq", "quantize_seconds": seconds,
                 "model_implementation": type(model).__module__ + "." + type(model).__name__,
@@ -123,18 +126,21 @@ def evaluate_saved_ppl(protocol, *, checkpoint_dir, seed):
         raise FileExistsError(f"PPL result already exists: {output}")
     metadata = validate_checkpoint(output)
     validate_provenance(protocol, metadata["provenance"], seed=seed)
-    tokenizer = load_tokenizer(output)
-    model = load_packed_model(output)
-    from pmq.evaluation_backend import prepare_evaluation_model
-    backend = prepare_evaluation_model(model)
+    with component("load_model"):
+        tokenizer = load_tokenizer(output)
+        model = load_packed_model(output)
+        from pmq.evaluation_backend import prepare_evaluation_model
+        backend = prepare_evaluation_model(model)
     metrics = {}
     for name, settings in protocol.data["dataset"]["evaluations"].items():
-        blocks = evaluation_blocks(tokenizer, protocol.evaluation_paths[name], settings)
+        with component(f"load_evaluation_{name}"):
+            blocks = evaluation_blocks(tokenizer, protocol.evaluation_paths[name], settings)
         start = perf_counter()
         LOGGER.info("PPL_START dataset=%s blocks=%s", name, len(blocks))
-        metrics[name] = {"ppl": _ppl(model, blocks), "blocks": len(blocks),
-                         "predicted_tokens": sum(block.numel() - 1 for block in blocks),
-                         "seconds": perf_counter() - start}
+        with component(f"evaluate_ppl_{name}"):
+            metrics[name] = {"ppl": _ppl(model, blocks), "blocks": len(blocks),
+                             "predicted_tokens": sum(block.numel() - 1 for block in blocks),
+                             "seconds": perf_counter() - start}
         LOGGER.info("PPL_COMPLETE dataset=%s ppl=%.8f", name, metrics[name]["ppl"])
     result = {"method": "pmq", "status": "complete", "seed": seed, "checkpoint": str(output.resolve()),
               "checkpoint_sha256": metadata["files"]["qmodel.pt"], "loss_dtype": "float32",
