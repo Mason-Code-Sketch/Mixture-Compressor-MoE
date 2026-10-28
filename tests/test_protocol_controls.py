@@ -45,6 +45,17 @@ def test_zero_binary_channel_does_not_disable_other_channels():
     assert torch.equal(solver.quantize(weights), torch.tensor([[0., 0.], [-2., 2.]]))
 
 
+def test_native_flash_attention_alias_sets_model_loading_option():
+    args = SimpleNamespace(load_quantized=False, multigpu=False, tasks="",
+                           num_fewshot=0, batch_size=1, r=7,
+                           use_flash_attention_2=True, attn_implementation="eager")
+    validate_native_cli_args(args)
+    assert args.attn_implementation == "flash_attention_2"
+    args.attn_implementation = "sdpa"
+    with pytest.raises(ValueError, match="Conflicting attention"):
+        validate_native_cli_args(args)
+
+
 @pytest.mark.parametrize("setting", [{"mse": "false"}, {"candidate_quantizer": "unknown"}, {"mse_typo": False}])
 def test_standalone_rejects_unknown_or_invalid_controls(setting):
     with pytest.raises(ValueError):
@@ -52,7 +63,7 @@ def test_standalone_rejects_unknown_or_invalid_controls(setting):
 
 
 @pytest.mark.parametrize("field,value", [("load_quantized", True), ("multigpu", True),
-    ("tasks", "piqa"), ("num_fewshot", 5), ("batch_size", 4)])
+    ("tasks", "piqa"), ("num_fewshot", 5), ("batch_size", 4), ("r", 4)])
 def test_native_cli_rejects_unimplemented_requests(field, value):
     args = SimpleNamespace(load_quantized=False, multigpu=False, tasks="", num_fewshot=0, batch_size=1)
     setattr(args, field, value)
