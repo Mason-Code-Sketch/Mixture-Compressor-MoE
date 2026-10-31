@@ -61,7 +61,7 @@ def _capture_layer_io(model, module, inputs, device):
 
 
 @torch.inference_mode()
-def _candidate_loss_for_layer(
+def _candidate_loss_for_layer_reference(
     *,
     module,
     adapter: PmqMoeAdapter,
@@ -99,6 +99,55 @@ def _candidate_loss_for_layer(
         losses[expert] = by_bit
         progress("FACTOR_EXPERT", expert + 1, adapter.num_experts(module))
     return losses
+
+
+@torch.inference_mode()
+def _candidate_loss_for_layer(*, module, adapter, inputs, outputs, bits, group_size):
+    from pmq.factor_cache import NativeExpertCache
+    if not NativeExpertCache.supports(module):
+        return _candidate_loss_for_layer_reference(module=module, adapter=adapter,
+            inputs=inputs, outputs=outputs, bits=bits, group_size=group_size)
+    device = _module_device(module)
+    count = adapter.num_experts(module)
+    # Quantize exactly once per expert/bit, with the existing normal quantizer.
+    candidates = []
+    for expert in range(count):
+        weights = adapter.expert_weights(module, expert)
+        candidates.append([{name: value.cpu() for name, value in
+            quantized_weights(weights, bit=int(bit), group_size=group_size).items()}
+            for bit in bits])
+    losses = torch.zeros((count, len(bits)), device=device, dtype=torch.float64)
+    # Eight samples bound the GPU contribution cache; other chunks remain on CPU.
+    chunk_size = 8
+    for start in range(0, len(inputs), chunk_size):
+        hidden = [x.to(device) for x in inputs[start:start + chunk_size]]
+        references = [x.to(device, dtype=torch.float64)
+                      for x in outputs[start:start + chunk_size]]
+        with NativeExpertCache(module) as cache:
+            for sample, x in enumerate(hidden):
+                cache.sample = sample
+                _module_output(module(x))
+            for expert in range(count):
+                original = {name: value.clone() for name, value in
+                            adapter.expert_weights(module, expert).items()}
+                cache.changed_expert = expert
+                try:
+                    for bit_index, weights in enumerate(candidates[expert]):
+                        adapter.set_expert_weights(module, expert, weights)
+                        for sample, (x, reference) in enumerate(zip(hidden, references)):
+                            cache.sample = sample
+                            actual = _module_output(module(x))
+                            delta = reference - actual.to(torch.float64)
+                            losses[expert, bit_index].add_(torch.linalg.vector_norm(delta))
+                finally:
+                    adapter.set_expert_weights(module, expert, original)
+            cache.changed_expert = None
+        progress("FACTOR_SAMPLES", min(start + chunk_size, len(inputs)), len(inputs))
+    values = losses.cpu().tolist()
+    if not torch.isfinite(losses).all().item() or (losses < 0).any().item():
+        raise FloatingPointError("invalid cached PMQ candidate loss")
+    return {expert: {int(bit): float(values[expert][i]) for i, bit in enumerate(bits)}
+            for expert in range(count)}
 
 
 def collect_pmq_factors(protocol: ProtocolConfig, *, seed: int) -> tuple[PmqFactors, dict]:
