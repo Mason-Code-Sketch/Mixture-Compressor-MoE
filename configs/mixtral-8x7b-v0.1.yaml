@@ -42,6 +42,8 @@ calibration:
     seq_len: 2048
 
 quantization:
+  # Restore range search and low-bit block compensation only.
+  mcmoe_rules: true
   group_size: 128
   candidate_quantizer: normal
   percdamp: 0.01

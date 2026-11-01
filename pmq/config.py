@@ -97,7 +97,7 @@ def load_protocol_config(path: str | Path) -> ProtocolConfig:
 def resolve_quantization_settings(settings):
     """Validate supported PMQ controls before any model or calibration work."""
     defaults = {
-        "group_size": 128, "percdamp": 0.01, "mse": True,
+        "group_size": 128, "percdamp": 0.01, "mse": True, "mcmoe_rules": False,
         "candidate_quantizer": "normal", "standard_linear_bit": 4, "router_bit": 16,
     }
     if not isinstance(settings, dict):
@@ -106,6 +106,8 @@ def resolve_quantization_settings(settings):
     if unknown:
         raise ValueError(f"Unknown PMQ quantization settings: {sorted(unknown)}")
     resolved = dict(defaults, **settings)
+    if not isinstance(resolved["mcmoe_rules"], bool):
+        raise ValueError("PMQ quantization.mcmoe_rules must be boolean")
     if not isinstance(resolved["mse"], bool):
         raise ValueError("PMQ quantization.mse must be boolean")
     if (

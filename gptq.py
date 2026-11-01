@@ -14,7 +14,7 @@ torch.backends.cudnn.allow_tf32 = False
 
 class GPTQ:
 
-    def __init__(self, layer, logger, name, wbits):
+    def __init__(self, layer, logger, name, wbits, *, mcmoe_rules=False):
         self.layer = layer
         self.dev = self.layer.weight.device
         W = layer.weight.data.clone()
@@ -26,7 +26,7 @@ class GPTQ:
         self.columns = W.shape[1]
         self.H = torch.zeros((self.columns, self.columns), device=self.dev)
         self.nsamples = 0
-        self.quantizer = quantizer_moe.Quantizer()
+        self.quantizer = quantizer_moe.Quantizer(mcmoe_rules=mcmoe_rules)
         self.logger = logger
         self.name = name
         self.wbits = wbits
@@ -159,7 +159,8 @@ class GPTQ:
                 Losses1[:, i] = (w - q_r)**2 / d**2
                 err1 = (w - q_r) / d
 
-                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                if not self.quantizer.mcmoe_rules or self.wbits > 3:
+                    W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
                 
                 Err1[:, i] = err1
 

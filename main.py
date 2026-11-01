@@ -166,7 +166,8 @@ def mixtral_sequential(model, dataloader, dev, bit_config=None):
             gptq = {}
             for name in subset:
 
-                gptq[name] = GPTQ(subset[name], logger, name, args.wbits)
+                gptq[name] = GPTQ(subset[name], logger, name, args.wbits,
+                                  mcmoe_rules=model.config.model_type == "mixtral")
 
                 if args.mixed_type == "uniform":
                     gptq[name].quantizer.configure(args.wbits, perchannel=True, sym=args.sym, mse=args.mse, pack=args.pack)
