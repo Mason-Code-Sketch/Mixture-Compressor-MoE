@@ -35,9 +35,10 @@ def _mcmoe_params(
     bits: int,
     *,
     mse: bool = True,
+    mcmoe_rules: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Solve the selected grid with PMQ native FP16 parameter arithmetic."""
-    quantizer = Quantizer()
+    quantizer = Quantizer(mcmoe_rules=mcmoe_rules)
     quantizer.configure(bits, perchannel=True, sym=False, mse=mse, pack=True)
     quantizer.find_params(weight, weight=True)
     return quantizer.scale.flatten(), quantizer.zero.flatten()
@@ -46,11 +47,14 @@ def _mcmoe_params(
 class TensorGPTQ:
     """Apply the repository's GPTQ update to one 2-D weight tensor."""
 
-    def __init__(self, weight: torch.Tensor, *, bits: int, mse: bool = True):
+    def __init__(self, weight: torch.Tensor, *, bits: int, mse: bool = True, mcmoe_rules: bool = False):
         if weight.ndim != 2:
             raise ValueError(f"GPTQ requires a matrix weight, got {tuple(weight.shape)}")
         if not isinstance(mse, bool):
             raise ValueError("PMQ MSE must be boolean")
+        if not isinstance(mcmoe_rules, bool):
+            raise ValueError("mcmoe_rules must be boolean")
+        self.mcmoe_rules = mcmoe_rules
         self.mse = mse
         self.weight = weight.detach()
         self.bits = int(bits)
@@ -107,6 +111,7 @@ class TensorGPTQ:
                         weight[:, start : start + block_size],
                         self.bits,
                         mse=self.mse,
+                        mcmoe_rules=self.mcmoe_rules,
                     )
                     group_scales.append(scale.detach().clone())
                     group_zeros.append(zero.detach().clone())
@@ -128,9 +133,10 @@ class TensorGPTQ:
                     posinf=0.0,
                     neginf=0.0,
                 )
-                source[:, offset:] -= error.unsqueeze(1).matmul(
-                    block_inverse[offset, offset:].unsqueeze(0)
-                )
+                if not self.mcmoe_rules or self.bits > 3:
+                    source[:, offset:] -= error.unsqueeze(1).matmul(
+                        block_inverse[offset, offset:].unsqueeze(0)
+                    )
                 errors[:, offset] = error
             result[:, start:end] = quantized
             weight[:, end:] -= errors.matmul(hessian[start:end, end:])

@@ -79,8 +79,11 @@ def r_residual_binary(x, scale, r_scale, rr_scale, order=3):
 
 class Quantizer(nn.Module):
 
-    def __init__(self, shape=1):
+    def __init__(self, shape=1, *, mcmoe_rules=False):
         super(Quantizer, self).__init__()
+        if not isinstance(mcmoe_rules, bool):
+            raise ValueError("mcmoe_rules must be boolean")
+        self.mcmoe_rules = mcmoe_rules
         self._params_ready = False
         self.register_buffer('maxq', torch.tensor(0, dtype=torch.float16))
         self.register_buffer('scale', torch.zeros(shape, dtype=torch.float16))
@@ -165,8 +168,14 @@ class Quantizer(nn.Module):
 
             if self.mse:
                 best = torch.full_like(scale, float('inf'))
-                for index in range(int(self.maxshrink * self.grid)):
-                    p = 1 - index / self.grid
+                factors = (
+                    torch.cat((torch.ones(1, device=x.device, dtype=x.dtype),
+                               torch.linspace(1., 1.1, 51, device=x.device, dtype=x.dtype)[1:],
+                               torch.linspace(1., .9, 51, device=x.device, dtype=x.dtype)[1:]))
+                    if self.mcmoe_rules else
+                    [1 - index / self.grid for index in range(int(self.maxshrink * self.grid))]
+                )
+                for p in factors:
                     xmin1 = p * xmin
                     xmax1 = p * xmax
                     scale1 = (xmax1 - xmin1) / maxq
