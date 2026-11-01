@@ -56,7 +56,7 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
     from pmq.evaluation_backend import prepare_evaluation_model
     backend = prepare_evaluation_model(model)
     lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size="auto", max_batch_size=8,
-              add_bos_token=False, parallelize=True)
+              add_bos_token=False, parallelize=False)
     attention = getattr(getattr(model, "config", None), "_attn_implementation", None)
     LOGGER.info("SEVEN_START tasks=%s num_fewshot=0 add_bos_token=False attention=%s",
                 SEVEN_TASKS, attention)
