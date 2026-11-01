@@ -60,6 +60,7 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
         raw = {"results": {task: {"acc,none": .5} for task in SEVEN_TASKS}, "n-shot": {task: 0 for task in SEVEN_TASKS}}
         with patch("lm_eval.models.huggingface.HFLM") as wrapped, patch("lm_eval.evaluator.simple_evaluate", return_value=raw):
             main(common + ["--phase", "zeroshot"])
+            assert wrapped.call_args.kwargs["parallelize"] is False
             evaluated = wrapped.call_args.kwargs["pretrained"]
             assert any(isinstance(module, GroupedExperts) for module in evaluated.modules())
             assert evaluated.config._attn_implementation == "sdpa"
