@@ -25,6 +25,7 @@ def load_model(protocol):
         "device_map": "auto",
         "trust_remote_code": True,
     }
+    kwargs["experts_implementation"] = "eager"
     attn_implementation = settings.get("attn_implementation")
     if attn_implementation:
         kwargs["attn_implementation"] = str(attn_implementation)
