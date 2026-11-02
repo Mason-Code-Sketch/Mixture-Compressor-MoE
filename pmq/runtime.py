@@ -60,8 +60,7 @@ def load_model(protocol):
     }
     if settings.get("attn_implementation"):
         kwargs["attn_implementation"] = str(settings["attn_implementation"])
-    if native_deepseek:
-        kwargs["experts_implementation"] = "eager"
+    kwargs["experts_implementation"] = "eager"
     if settings.get("max_memory"):
         kwargs["max_memory"] = {
             int(key) if str(key).isdigit() else key: value
