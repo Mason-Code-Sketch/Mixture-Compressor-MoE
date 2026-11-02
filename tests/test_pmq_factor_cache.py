@@ -1,6 +1,7 @@
 import unittest
+import os
 import torch
-from transformers import AutoModelForCausalLM, DeepseekV2Config, Qwen2MoeConfig
+from transformers import AutoModelForCausalLM, DeepseekV2Config, Qwen2MoeConfig, Qwen3MoeConfig, MixtralConfig
 from pmq.adapters import PmqMoeAdapter
 from pmq.factors import _candidate_loss_for_layer, _candidate_loss_for_layer_reference
 from pmq.factor_cache import NativeExpertCache
@@ -12,22 +13,27 @@ def make_module(architecture, dtype=torch.float32):
     if architecture=='deepseek_moe':
         config=DeepseekV2Config(**common,n_routed_experts=4,n_shared_experts=1,
             q_lora_rank=8,kv_lora_rank=4,qk_nope_head_dim=4,qk_rope_head_dim=4,v_head_dim=4,first_k_dense_replace=1)
+    elif architecture=='qwen3_moe':
+        config=Qwen3MoeConfig(**common,num_experts=4)
+    elif architecture=='mixtral':
+        config=MixtralConfig(**common,num_local_experts=4)
     else:
         config=Qwen2MoeConfig(**common,num_experts=4,shared_expert_intermediate_size=16)
     config._attn_implementation='eager';config._experts_implementation='eager'
     torch.manual_seed(19)
-    model=AutoModelForCausalLM.from_config(config).eval().to(dtype)
+    model=AutoModelForCausalLM.from_config(config).eval().to(device=os.environ.get('PMQ_TEST_DEVICE', 'cpu'), dtype=dtype)
     adapter=PmqMoeAdapter(architecture)
     return next(iter(adapter.collect_moe_modules(model).values())),adapter
 
 
 class FactorCacheTest(unittest.TestCase):
     def test_native_losses_and_restoration(self):
-        for architecture in ['deepseek_moe','qwen2_moe']:
+        for architecture in ['deepseek_moe','qwen2_moe','qwen3_moe','mixtral']:
             for dtype in [torch.float32,torch.float16]:
                 with self.subTest(architecture=architecture,dtype=dtype):
                     module,adapter=make_module(architecture,dtype)
-                    inputs=[torch.randn(1,9,16,dtype=dtype) for _ in range(10)]
+                    self.assertTrue(NativeExpertCache.supports(module))
+                    inputs=[torch.randn(1,9,16,dtype=dtype,device=os.environ.get('PMQ_TEST_DEVICE', 'cpu')) for _ in range(10)]
                     with torch.inference_mode():outputs=[module(x).clone() for x in inputs]
                     weights={k:v.clone() for k,v in module.state_dict().items()}
                     kwargs=dict(module=module,adapter=adapter,inputs=inputs,outputs=outputs,bits=(1,2,3),group_size=4)

@@ -19,7 +19,7 @@ class NativeExpertCache:
 
     @staticmethod
     def supports(module):
-        return (type(module.experts).__name__ in {'DeepseekV2Experts', 'Qwen2MoeExperts'}
+        return (type(module.experts).__name__ in {'DeepseekV2Experts', 'Qwen2MoeExperts', 'Qwen3MoeExperts', 'MixtralExperts'}
                 and hasattr(module.experts, 'gate_up_proj')
                 and hasattr(module.experts, 'down_proj'))
 
