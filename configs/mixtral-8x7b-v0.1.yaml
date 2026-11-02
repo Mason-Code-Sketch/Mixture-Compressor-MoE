@@ -53,6 +53,8 @@ quantization:
 
 pmq:
   candidate_bits: [1, 2, 3]
+  # Only 1.25 bit: the native c2+c3 minimum is 11/8 bit per layer.
+  relax_mixtral_1p25_c2c3: true
   shared_expert_bit: 3
   alpha: 1.0
   beta: 1.5

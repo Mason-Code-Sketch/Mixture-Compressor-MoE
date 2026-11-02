@@ -11,7 +11,10 @@ from time import perf_counter
 import torch
 
 from pmq.adapters import PmqMoeAdapter
-from pmq.allocation import build_loss_by_layer, solve_pmq_layers, tied_projection_plan
+from pmq.allocation import (
+    allocation_requires_mid_and_high, build_loss_by_layer,
+    solve_pmq_layers, tied_projection_plan,
+)
 from pmq.artifacts import provenance, sha256_file, write_json, write_pickle, validate_provenance
 from pmq.config import load_protocol_config
 from pmq.evaluate import evaluate_pmq_plan, quantize_pmq_plan, evaluate_saved_ppl, validate_checkpoint
@@ -91,6 +94,10 @@ def _allocate(protocol, *, factors_path, output_dir, average_bit, allocation_pat
     bits = protocol.candidate_bits
     if not bits[0] <= average_bit <= bits[-1]:
         raise ValueError(f"average bit must lie in [{bits[0]}, {bits[-1]}]")
+    require_mid_and_high = allocation_requires_mid_and_high(
+        protocol.architecture, average_bit,
+        relax_mixtral_1p25_c2c3=pmq_cfg.get("relax_mixtral_1p25_c2c3", False),
+    )
     losses = build_loss_by_layer(
         selected_count=payload["selected_count"], selected_weight=payload["selected_weight"],
         candidate_loss=payload["candidate_loss"], alpha=float(pmq_cfg.get("alpha", 1.0)),
@@ -102,13 +109,15 @@ def _allocate(protocol, *, factors_path, output_dir, average_bit, allocation_pat
     with component("solve_lp"):
         assignments = solve_pmq_layers(losses, average_bit=average_bit, shared_units=shared_units,
             shared_bit=int(pmq_cfg["shared_expert_bit"]), candidate_bits=bits,
-            backend=pmq_cfg.get("ilp_backend", "highs"))
+            backend=pmq_cfg.get("ilp_backend", "highs"),
+            require_mid_and_high=require_mid_and_high)
     native = {}
     for (layer, expert), bit in sorted(assignments.items()):
         native.setdefault(layer, {})[expert] = bit
     path.parent.mkdir(parents=True, exist_ok=True)
     write_pickle(path, native)
     metadata = {"status": "complete", "method": "pmq", "average_bit": average_bit,
+                "allocation_constraints": {"require_mid_and_high": require_mid_and_high},
                 "candidate_bits": list(bits), "shared_expert_bit": pmq_cfg["shared_expert_bit"],
                 "allocation": tied_projection_plan(assignments), "allocation_sha256": sha256_file(path),
                 "allocation_seconds": perf_counter() - started,

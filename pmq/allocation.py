@@ -10,6 +10,20 @@ import torch
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
 
+def allocation_requires_mid_and_high(
+    architecture: str,
+    average_bit: float,
+    *,
+    relax_mixtral_1p25_c2c3: bool = False,
+) -> bool:
+    """Apply the explicit Mixtral 1.25-bit exception to the native constraints."""
+    if type(relax_mixtral_1p25_c2c3) is not bool:
+        raise ValueError("pmq.relax_mixtral_1p25_c2c3 must be boolean")
+    if relax_mixtral_1p25_c2c3 and architecture != "mixtral":
+        raise ValueError("The 1.25-bit c2/c3 exception is restricted to Mixtral")
+    return not (relax_mixtral_1p25_c2c3 and average_bit == 1.25)
+
+
 def tied_projection_plan(bits_by_expert: Mapping[tuple[int, int], int]) -> dict:
     """Expand PMQ's one-bit-per-expert assignment into the shared plan schema."""
     return {
@@ -101,6 +115,7 @@ def solve_pmq_layers(
     shared_bit: int,
     candidate_bits: Sequence[int] = (1, 2, 3),
     backend: str = "highs",
+    require_mid_and_high: bool = True,
 ) -> dict[tuple[int, int], int]:
     """Solve PMQ's independent layer ILPs and flatten assignments by expert."""
     from pmq.solver import solve_layer_ilp
@@ -118,6 +133,7 @@ def solve_pmq_layers(
             bit_budget=routed_budget,
             candidate_bits=candidate_bits,
             backend=backend,
+            require_mid_and_high=require_mid_and_high,
         )
         assignments.update(
             {
