@@ -37,22 +37,36 @@ def _module_device(module) -> torch.device:
     return next(module.parameters()).device
 
 
-def _capture_layer_io(model, module, inputs, device):
+def _capture_layer_io(model, module, inputs, device, *, stop_after_capture=True):
     """Capture native MoE inputs and outputs without replacing its forward."""
     captured_inputs: list[torch.Tensor] = []
     captured_outputs: list[torch.Tensor] = []
+
+    class CaptureComplete(Exception):
+        pass
+
+    # Accelerate offload hooks require their matching post-forward cleanup.
+    # Keep that execution path complete; only stop plain Qwen3 eval forwards.
+    stop_early = (stop_after_capture and not model.training
+                  and getattr(model.config, "model_type", None) == "qwen3_moe"
+                  and not any(hasattr(child, "_hf_hook") for child in model.modules()))
 
     def capture(_module, args, output):
         if not args or not isinstance(args[0], torch.Tensor):
             raise RuntimeError("native MoE module did not receive hidden states")
         captured_inputs.append(args[0].detach().cpu())
         captured_outputs.append(_module_output(output).detach().cpu())
+        if stop_early:
+            raise CaptureComplete
 
     handle = module.register_forward_hook(capture)
     try:
         with torch.inference_mode():
             for ids in inputs:
-                model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
+                try:
+                    model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
+                except CaptureComplete:
+                    pass
     finally:
         handle.remove()
     if len(captured_inputs) != len(inputs):
