@@ -35,7 +35,8 @@ def run(args, protocol, output_dir):
             from pmq.evaluation_backend import prepare_evaluation_model
             backend = prepare_evaluation_model(model)
         with component(args.phase):
-            payload = evaluate(model, tokenizer, args.phase, seed=args.seed, batch_size=1, limit=args.limit)
+            payload = evaluate(model, tokenizer, args.phase, seed=args.seed, batch_size=args.batch_size,
+                               max_batch_size=args.max_batch_size, limit=args.limit)
         payload["experiment"] = {"method": "pmq", "checkpoint": str(checkpoint),
                                  "checkpoint_sha256": identity["files"]["qmodel.pt"],
                                  "provenance": identity["provenance"],

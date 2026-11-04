@@ -23,6 +23,17 @@ from pmq.monitor import RunMonitor, LOGGER, component
 from pmq.runtime import load_model_config, load_tokenizer
 
 
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def batch_size(value):
+    return "auto" if value == "auto" else positive_int(value)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Standalone PMQ protocol runner")
     parser.add_argument("--config", required=True)
@@ -34,9 +45,19 @@ def parse_args(argv=None):
     parser.add_argument("--average-bit", type=float, default=None)
     parser.add_argument("--saving-path", "--saving_path", default=None, help="Original PMQ packed-model directory")
     parser.add_argument("--log-dir", type=Path, help="Supplemental task batch log directory")
+    parser.add_argument("--batch-size", type=batch_size, default=None,
+                        help="Supplemental batch size (default: auto)")
+    parser.add_argument("--max-batch-size", type=positive_int, default=None,
+                        help="Supplemental auto batch cap (default: 8)")
     parser.add_argument("--limit", type=int, help="Supplemental smoke only; no formal result written")
     parser.add_argument("--monitor-interval", type=float, default=5)
     args = parser.parse_args(argv)
+    if (args.batch_size is not None or args.max_batch_size is not None) and args.phase not in ("mmlu_5shot", "gsm8k_0shot"):
+        parser.error("--batch-size and --max-batch-size apply only to supplemental phases")
+    if args.batch_size is None:
+        args.batch_size = "auto"
+    if args.max_batch_size is None:
+        args.max_batch_size = 8
     if args.limit is not None and (args.limit < 1 or args.phase not in ("mmlu_5shot", "gsm8k_0shot")):
         parser.error("--limit requires a supplemental phase and a positive count")
     if args.log_dir is not None and args.phase not in ("mmlu_5shot", "gsm8k_0shot"):

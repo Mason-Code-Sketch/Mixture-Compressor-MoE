@@ -94,3 +94,14 @@ def test_packed_deepseek_real_harness_generation(dtype, tmp_path):
     assert result["protocol"]["num_fewshot"] == 0
     assert result["summary"]["sample_counts"] == {"gsm8k": 1}
     assert set(result["summary"]["gsm8k"]) == {"exact_match,strict-match", "exact_match,flexible-extract"}
+
+
+@pytest.mark.parametrize('profile', ['mmlu_5shot', 'gsm8k_0shot'])
+def test_real_harness_auto_batch(profile):
+    model, tok = tiny('qwen3_moe')
+    with patch('datasets.load_dataset', side_effect=dataset):
+        result = protocol.evaluate(model, tok, profile, batch_size='auto', max_batch_size=2, limit=2)
+    assert result['protocol']['batch_size'] == 'auto'
+    assert result['protocol']['max_batch_size'] == 2
+    assert result['protocol']['status'] == 'smoke'
+    assert set(result['summary']['sample_counts'].values()) == {2}
