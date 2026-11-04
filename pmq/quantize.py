@@ -332,17 +332,13 @@ def apply_allocation(
         LOGGER.info("QUANTIZE_LAYER_START layer=%s total=%s", layer_index, len(layers))
         module = modules.get(layer_index)
         router = adapter.router_module(module) if module is not None else None
-        # Capture only projections that will actually be quantized. Native DeepSeek
-        # reads gate.weight directly, so the floating Router forward hook is not invoked.
-        standard_targets = []
-        for name, linear in _standard_linears(layer, module):
+        standard_named_linears = _standard_linears(layer, module)
+        standard_linears = [linear for _name, linear in standard_named_linears]
+        standard_inputs = _capture_many_inputs(model, standard_linears, gptq_inputs, device)
+        for name, linear in standard_named_linears:
             bit = router_bit if linear is router or name.endswith("shared_expert_gate") else standard_bit
-            if bit < 16:
-                standard_targets.append((name, linear, bit))
-        standard_linears = [linear for _name, linear, _bit in standard_targets]
-        standard_inputs = (_capture_many_inputs(model, standard_linears, gptq_inputs, device)
-                           if standard_targets else {})
-        for name, linear, bit in standard_targets:
+            if bit >= 16:
+                continue
             linear.weight.copy_(
                 _quantize_matrix(
                     linear.weight,
