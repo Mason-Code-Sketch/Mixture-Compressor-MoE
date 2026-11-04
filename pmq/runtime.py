@@ -22,7 +22,7 @@ def load_model(protocol):
     dtype = getattr(torch, dtype_name)
     kwargs = {
         "torch_dtype": dtype,
-        "device_map": "auto",
+        "device_map": settings.get("device_map", "auto"),
         "trust_remote_code": True,
     }
     kwargs["experts_implementation"] = "eager"

@@ -3,6 +3,7 @@ model:
   id: Qwen3-30B-A3B
   architecture: qwen3_moe
   dtype: float16
+  device_map: cuda:0
   attn_implementation: eager
 
 
