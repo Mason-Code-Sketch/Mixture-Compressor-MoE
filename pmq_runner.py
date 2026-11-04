@@ -24,15 +24,22 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Standalone PMQ protocol runner")
     parser.add_argument("--config", required=True)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--phase", choices=("factors", "allocate", "quantize", "ppl", "zeroshot", "evaluate"), required=True)
+    parser.add_argument("--phase", choices=("factors", "allocate", "quantize", "ppl", "zeroshot", "evaluate", "mmlu_5shot", "gsm8k_0shot"), required=True)
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--factors-path", default=None, help="Directory containing the original three PKLs, or a legacy factors PT")
     parser.add_argument("--allocation-path", default=None)
     parser.add_argument("--average-bit", type=float, default=None)
     parser.add_argument("--saving-path", "--saving_path", default=None, help="Original PMQ packed-model directory")
     parser.add_argument("--budget-policy", choices=("strict", "floor", "balanced_exact"), default=None)
+    parser.add_argument("--log-dir", type=Path, help="Supplemental task batch log directory")
+    parser.add_argument("--limit", type=int, help="Supplemental smoke only; no formal result written")
     parser.add_argument("--monitor-interval", type=float, default=5)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.limit is not None and (args.limit < 1 or args.phase not in ("mmlu_5shot", "gsm8k_0shot")):
+        parser.error("--limit requires a supplemental phase and a positive count")
+    if args.log_dir is not None and args.phase not in ("mmlu_5shot", "gsm8k_0shot"):
+        parser.error("--log-dir applies only to supplemental phases")
+    return args
 
 
 def _output_dir(protocol, explicit):
@@ -127,6 +134,9 @@ def main(argv=None):
     protocol = load_protocol_config(args.config)
     output_dir = _output_dir(protocol, args.out_dir)
     phase_name = args.phase + (f"_avg{args.average_bit:g}" if args.average_bit is not None else "")
+    if args.phase in ("mmlu_5shot", "gsm8k_0shot"):
+        from pmq.supplemental_entry import run
+        return run(args, protocol, output_dir)
     with RunMonitor(output_dir / "logs", phase_name, interval=args.monitor_interval):
         if args.phase == "factors":
             if any((output_dir / name).exists() for name in ("experts_act_frequency.pkl", "factors_complete.json")):
