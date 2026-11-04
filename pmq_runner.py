@@ -46,18 +46,18 @@ def parse_args(argv=None):
     parser.add_argument("--saving-path", "--saving_path", default=None, help="Original PMQ packed-model directory")
     parser.add_argument("--log-dir", type=Path, help="Supplemental task batch log directory")
     parser.add_argument("--batch-size", type=batch_size, default=None,
-                        help="Supplemental batch size (default: auto)")
+                        help="Evaluation batch size (default: auto)")
     parser.add_argument("--max-batch-size", type=positive_int, default=None,
-                        help="Supplemental auto batch cap (default: 8)")
+                        help="Evaluation auto batch cap (default: 64)")
     parser.add_argument("--limit", type=int, help="Supplemental smoke only; no formal result written")
     parser.add_argument("--monitor-interval", type=float, default=5)
     args = parser.parse_args(argv)
-    if (args.batch_size is not None or args.max_batch_size is not None) and args.phase not in ("mmlu_5shot", "gsm8k_0shot"):
-        parser.error("--batch-size and --max-batch-size apply only to supplemental phases")
+    if (args.batch_size is not None or args.max_batch_size is not None) and args.phase not in ("zeroshot", "mmlu_5shot", "gsm8k_0shot"):
+        parser.error("--batch-size and --max-batch-size require a zeroshot or supplemental phase")
     if args.batch_size is None:
         args.batch_size = "auto"
     if args.max_batch_size is None:
-        args.max_batch_size = 8
+        args.max_batch_size = 64
     if args.limit is not None and (args.limit < 1 or args.phase not in ("mmlu_5shot", "gsm8k_0shot")):
         parser.error("--limit requires a supplemental phase and a positive count")
     if args.log_dir is not None and args.phase not in ("mmlu_5shot", "gsm8k_0shot"):
@@ -201,7 +201,8 @@ def main(argv=None):
                     model = load_zeroshot_model(checkpoint)
                     tokenizer = load_tokenizer(checkpoint)
                 with component("evaluate_zeroshot"):
-                    output = evaluate_seven(model, tokenizer, checkpoint, seed=args.seed)
+                    output = evaluate_seven(model, tokenizer, checkpoint, seed=args.seed,
+                                            batch_size=args.batch_size, max_batch_size=args.max_batch_size)
                 write_json(checkpoint / "complete.json", {"status": "complete", "method": "pmq",
                     "ppl_sha256": sha256_file(checkpoint / "evaluation.json"),
                     "zeroshot_sha256": sha256_file(output),
