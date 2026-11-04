@@ -9,7 +9,8 @@ import torch
 import yaml
 
 
-def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
+@pytest.mark.parametrize("batch_args,batch,cap", [([], "auto", 64), (["--batch-size", "2", "--max-batch-size", "4"], 2, 4)])
+def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path, batch_args, batch, cap):
     from datasets import Dataset, DatasetDict
     from tokenizers import Tokenizer, models, pre_tokenizers
     from transformers import AutoModelForCausalLM, Qwen2MoeConfig, PreTrainedTokenizerFast
@@ -60,7 +61,9 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
         main(common + ["--phase", "ppl"])
         raw = {"results": {task: {"acc,none": .5} for task in SEVEN_TASKS}, "n-shot": {task: 0 for task in SEVEN_TASKS}}
         with patch("lm_eval.models.huggingface.HFLM") as wrapped, patch("lm_eval.evaluator.simple_evaluate", return_value=raw):
-            main(common + ["--phase", "zeroshot"])
+            main(common + ["--phase", "zeroshot"] + batch_args)
+            assert wrapped.call_args.kwargs["batch_size"] == batch
+            assert wrapped.call_args.kwargs["max_batch_size"] == cap
             evaluated = wrapped.call_args.kwargs["pretrained"]
             assert any(isinstance(module, GroupedExperts) for module in evaluated.modules())
             assert evaluated.config._attn_implementation == "sdpa"
@@ -68,6 +71,8 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
     ppl = json.loads((checkpoint / "evaluation.json").read_text())
     seven = json.loads((checkpoint / "zeroshot.json").read_text())
     assert seven["experiment"]["attn_implementation"] == "sdpa"
+    assert seven["experiment"]["batch_size"] == batch
+    assert seven["experiment"]["max_batch_size"] == cap
     assert ppl["evaluation_backend"] == seven["experiment"]["evaluation_backend"] == "grouped_cached"
     assert ppl["checkpoint_sha256"] == seven["experiment"]["checkpoint_sha256"] == digest
     assert json.loads((checkpoint / "complete.json").read_text())["status"] == "complete"
@@ -77,9 +82,9 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
     from test_supplemental import raw_result
     for profile in ("mmlu_5shot", "gsm8k_0shot"):
         with patch("lm_eval.models.huggingface.HFLM") as wrapped, patch("lm_eval.evaluator.simple_evaluate", return_value=raw_result(profile)):
-            main(common + ["--phase", profile, "--log-dir", str(output / "batch-logs")])
-        assert wrapped.call_args.kwargs['batch_size'] == 'auto'
-        assert wrapped.call_args.kwargs['max_batch_size'] == 8
+            main(common + ["--phase", profile, "--log-dir", str(output / "batch-logs")] + batch_args)
+        assert wrapped.call_args.kwargs['batch_size'] == batch
+        assert wrapped.call_args.kwargs['max_batch_size'] == cap
         saved = json.loads((checkpoint / (profile + ".json")).read_text())
         assert saved["protocol"]["num_fewshot"] == (5 if profile == "mmlu_5shot" else 0)
         assert Path(saved["experiment"]["log_path"]).is_file()
@@ -88,12 +93,12 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
     assert sha256_file(checkpoint / "qmodel.pt") == digest
 
 
-@pytest.mark.parametrize("profile", ["mmlu_5shot", "gsm8k_0shot"])
+@pytest.mark.parametrize("profile", ["zeroshot", "mmlu_5shot", "gsm8k_0shot"])
 def test_supplemental_batch_options(profile):
     from pmq_runner import parse_args
     common = ["--config", "model.yaml", "--phase", profile]
     defaults = parse_args(common)
-    assert (defaults.batch_size, defaults.max_batch_size) == ("auto", 8)
+    assert (defaults.batch_size, defaults.max_batch_size) == ("auto", 64)
     fixed = parse_args(common + ["--batch-size", "2", "--max-batch-size", "4"])
     assert (fixed.batch_size, fixed.max_batch_size) == (2, 4)
     auto = parse_args(common + ["--batch-size", "auto", "--max-batch-size", "4"])
@@ -111,4 +116,4 @@ def test_invalid_supplemental_batch_options(flag, value):
 def test_batch_options_reject_unrelated_phases(flag):
     from pmq_runner import parse_args
     with pytest.raises(SystemExit):
-        parse_args(["--config", "model.yaml", "--phase", "zeroshot", flag, "2"])
+        parse_args(["--config", "model.yaml", "--phase", "factors", flag, "2"])

@@ -42,7 +42,7 @@ def summarize_seven(raw):
     return {"tasks": selected, "mean": sum(value["value"] for value in selected.values()) / len(SEVEN_TASKS)}
 
 
-def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
+def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0, batch_size="auto", max_batch_size=64):
     from lm_eval import evaluator
     from lm_eval.models.huggingface import HFLM
 
@@ -55,7 +55,7 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
     model.eval()
     from pmq.evaluation_backend import prepare_evaluation_model
     backend = prepare_evaluation_model(model)
-    lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size="auto", max_batch_size=8,
+    lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=batch_size, max_batch_size=max_batch_size,
               add_bos_token=False, parallelize=False)
     attention = getattr(getattr(model, "config", None), "_attn_implementation", None)
     LOGGER.info("SEVEN_START tasks=%s num_fewshot=0 add_bos_token=False attention=%s",
@@ -75,7 +75,7 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0):
                        "checkpoint_sha256": sha256_file(checkpoint_dir / "qmodel.pt"),
                        "seed": seed, "tasks": list(SEVEN_TASKS), "num_fewshot": 0,
                        "add_bos_token": False, "apply_chat_template": False, "limit": None,
-                       "batch_size": "auto", "max_batch_size": 8, "evaluation_backend": backend,
+                       "batch_size": batch_size, "max_batch_size": max_batch_size, "evaluation_backend": backend,
                        "attn_implementation": attention},
         "summary": summary, "harness": raw,
     })
