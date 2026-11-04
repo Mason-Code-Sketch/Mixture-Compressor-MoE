@@ -9,7 +9,7 @@ import torch
 import yaml
 
 
-@pytest.mark.parametrize("batch_args,batch,cap", [([], "auto", 57), (["--batch-size", "2", "--max-batch-size", "4"], 2, 4)])
+@pytest.mark.parametrize("batch_args,batch,cap", [([], "auto", 51), (["--batch-size", "2", "--max-batch-size", "4"], 2, 4)])
 def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path, batch_args, batch, cap):
     from datasets import Dataset, DatasetDict
     from tokenizers import Tokenizer, models, pre_tokenizers
@@ -84,7 +84,7 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path, batch_ar
         with patch("lm_eval.models.huggingface.HFLM") as wrapped, patch("lm_eval.evaluator.simple_evaluate", return_value=raw_result(profile)):
             main(common + ["--phase", profile, "--log-dir", str(output / "batch-logs")] + batch_args)
         assert wrapped.call_args.kwargs['batch_size'] == batch
-        assert wrapped.call_args.kwargs['max_batch_size'] == (cap if batch_args else {'mmlu_5shot': 19, 'gsm8k_0shot': 107}[profile])
+        assert wrapped.call_args.kwargs['max_batch_size'] == (cap if batch_args else {'mmlu_5shot': 17, 'gsm8k_0shot': 96}[profile])
         saved = json.loads((checkpoint / (profile + ".json")).read_text())
         assert saved["protocol"]["num_fewshot"] == (5 if profile == "mmlu_5shot" else 0)
         assert Path(saved["experiment"]["log_path"]).is_file()
@@ -98,7 +98,7 @@ def test_supplemental_batch_options(profile):
     from pmq_runner import parse_args
     common = ["--config", "model.yaml", "--phase", profile]
     defaults = parse_args(common)
-    assert (defaults.batch_size, defaults.max_batch_size) == ("auto", {"zeroshot": 57, "mmlu_5shot": 19, "gsm8k_0shot": 107}[profile])
+    assert (defaults.batch_size, defaults.max_batch_size) == ("auto", {"zeroshot": 51, "mmlu_5shot": 17, "gsm8k_0shot": 96}[profile])
     fixed = parse_args(common + ["--batch-size", "2", "--max-batch-size", "4"])
     assert (fixed.batch_size, fixed.max_batch_size) == (2, 4)
     auto = parse_args(common + ["--batch-size", "auto", "--max-batch-size", "4"])

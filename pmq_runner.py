@@ -46,7 +46,7 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=batch_size, default=None,
                         help="Evaluation batch size (default: auto)")
     parser.add_argument("--max-batch-size", type=positive_int, default=None,
-                        help="Auto batch cap: zeroshot=57, mmlu_5shot=19, gsm8k_0shot=107")
+                        help="Auto batch cap: zeroshot=51, mmlu_5shot=17, gsm8k_0shot=96")
     parser.add_argument("--limit", type=int, help="Supplemental smoke only; no formal result written")
     parser.add_argument("--monitor-interval", type=float, default=5)
     args = parser.parse_args(argv)
@@ -55,7 +55,7 @@ def parse_args(argv=None):
     if args.batch_size is None:
         args.batch_size = "auto"
     if args.max_batch_size is None:
-        args.max_batch_size = {"mmlu_5shot": 19, "gsm8k_0shot": 107}.get(args.phase, 57)
+        args.max_batch_size = {"mmlu_5shot": 17, "gsm8k_0shot": 96}.get(args.phase, 51)
     if args.limit is not None and (args.limit < 1 or args.phase not in ("mmlu_5shot", "gsm8k_0shot")):
         parser.error("--limit requires a supplemental phase and a positive count")
     if args.log_dir is not None and args.phase not in ("mmlu_5shot", "gsm8k_0shot"):
