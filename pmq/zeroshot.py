@@ -42,7 +42,7 @@ def summarize_seven(raw):
     return {"tasks": selected, "mean": sum(value["value"] for value in selected.values()) / len(SEVEN_TASKS)}
 
 
-def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0, batch_size="auto", max_batch_size=57):
+def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0, batch_size="auto", max_batch_size=51):
     from lm_eval import evaluator
     from lm_eval.models.huggingface import HFLM
 
