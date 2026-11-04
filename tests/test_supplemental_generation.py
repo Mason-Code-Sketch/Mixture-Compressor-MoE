@@ -62,3 +62,35 @@ def test_real_harness_mmlu_five_shot():
     assert len(result['summary']['subjects'])==57
     assert set(result['harness']['n-shot'].values())=={5}
     assert result['protocol']['status']=='smoke'
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_packed_deepseek_real_harness_generation(dtype, tmp_path):
+    from types import SimpleNamespace
+    from pathlib import Path
+    from pmq.adapters import PmqMoeAdapter
+    from pmq.quantize import apply_allocation
+    from pmq.packed import save_packed_model
+    from pmq.zeroshot import load_zeroshot_model
+    from pmq.evaluation_backend import prepare_evaluation_model
+    model, tokenizer = tiny("deepseek_v2")
+    model.to(dtype)
+    adapter = PmqMoeAdapter("deepseek_moe")
+    allocation = {(layer, expert): 1 + expert % 3
+                  for layer, moe in adapter.collect_moe_modules(model).items()
+                  for expert in range(adapter.num_experts(moe))}
+    ids = torch.randint(0, 12, (2, 8))
+    config = SimpleNamespace(model_path=Path("unused"), gptq_calibration_path=Path("unused"),
+        data={"dataset": {"gptq_calibration": {}}, "calibration": {"gptq": {"samples": 2, "seq_len": 8}},
+              "quantization": {"group_size": 4, "percdamp": .01, "standard_linear_bit": 4, "router_bit": 16},
+              "pmq": {"shared_expert_bit": 3}})
+    with patch("pmq.quantize.load_tokenizer"), patch("pmq.quantize.calibration_inputs", return_value=ids):
+        apply_allocation(model, adapter, allocation, protocol=config, seed=0)
+    save_packed_model(model, tokenizer, tmp_path)
+    reloaded = load_zeroshot_model(tmp_path, device_map="cpu")
+    assert prepare_evaluation_model(reloaded, backend="grouped_cached") == "grouped_cached"
+    with patch("datasets.load_dataset", side_effect=dataset):
+        result = protocol.evaluate(reloaded, tokenizer, "gsm8k_0shot", limit=1)
+    assert result["protocol"]["num_fewshot"] == 0
+    assert result["summary"]["sample_counts"] == {"gsm8k": 1}
+    assert set(result["summary"]["gsm8k"]) == {"exact_match,strict-match", "exact_match,flexible-extract"}
