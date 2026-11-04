@@ -71,3 +71,16 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path):
     assert ppl["evaluation_backend"] == seven["experiment"]["evaluation_backend"] == "grouped_cached"
     assert ppl["checkpoint_sha256"] == seven["experiment"]["checkpoint_sha256"] == digest
     assert json.loads((checkpoint / "complete.json").read_text())["status"] == "complete"
+
+    # New supplemental evaluations reuse a completed checkpoint and leave completion intact.
+    completion_before = (checkpoint / "complete.json").read_bytes()
+    from test_supplemental import raw_result
+    for profile in ("mmlu_5shot", "gsm8k_0shot"):
+        with patch("lm_eval.models.huggingface.HFLM"), patch("lm_eval.evaluator.simple_evaluate", return_value=raw_result(profile)):
+            main(common + ["--phase", profile, "--log-dir", str(output / "batch-logs")])
+        saved = json.loads((checkpoint / (profile + ".json")).read_text())
+        assert saved["protocol"]["num_fewshot"] == (5 if profile == "mmlu_5shot" else 0)
+        assert Path(saved["experiment"]["log_path"]).is_file()
+        assert saved["experiment"]["checkpoint_sha256"] == digest
+    assert (checkpoint / "complete.json").read_bytes() == completion_before
+    assert sha256_file(checkpoint / "qmodel.pt") == digest

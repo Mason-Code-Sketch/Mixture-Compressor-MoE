@@ -139,6 +139,12 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, d
         logits = zeroshot(ids, use_cache=False).logits
     assert torch.isfinite(logits).all()
     assert (sdpa.call_count > 0) == (expected_attention == "sdpa")
+    with torch.inference_mode():
+        generated = zeroshot.generate(
+            ids[:1, :3], max_new_tokens=4, do_sample=False,
+            eos_token_id=1, pad_token_id=1, use_cache=kind != "deepseek_v2",
+        )
+    assert generated.shape[0] == 1 and 3 < generated.shape[1] <= 7
     # The override never changes saved attention or quantized weights.
     import json
     saved = json.loads((tmp_path / "config.json").read_text())
