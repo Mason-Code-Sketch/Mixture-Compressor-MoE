@@ -103,8 +103,17 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, d
         data={"dataset": {"gptq_calibration": {}}, "calibration": {"gptq": {"samples": 2, "seq_len": 8}},
               "quantization": {"group_size": 4, "percdamp": .01, "standard_linear_bit": 4, "router_bit": 16},
               "pmq": {"shared_expert_bit": 3}})
-    with patch("pmq.quantize.load_tokenizer"), patch("pmq.quantize.calibration_inputs", return_value=ids):
+    routers = [adapter.router_module(moe) for moe in adapter.collect_moe_modules(model).values()]
+    original_router_weights = [router.weight.detach().clone() for router in routers]
+    from pmq.quantize import _capture_many_inputs
+    with patch("pmq.quantize.load_tokenizer"), patch("pmq.quantize.calibration_inputs", return_value=ids), \
+            patch("pmq.quantize._capture_many_inputs", wraps=_capture_many_inputs) as captures:
         apply_allocation(model, adapter, allocation, protocol=protocol, seed=0)
+    assert captures.call_count == len(model.model.layers)
+    for call in captures.call_args_list:
+        assert call.args[1] and all(linear not in routers for linear in call.args[1])
+    for router, original in zip(routers, original_router_weights):
+        assert torch.equal(router.weight, original)
     with torch.inference_mode():
         reference = model(ids, use_cache=False).logits.clone()
     class Tokenizer:
@@ -150,3 +159,17 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, d
     saved = json.loads((tmp_path / "config.json").read_text())
     assert saved["pmq_quantization"]["attn_implementation"] == "eager"
     assert sha256_file(tmp_path / "qmodel.pt") == digest
+
+
+def test_missing_required_calibration_is_still_rejected():
+    from pmq.quantize import _capture_many_inputs
+    class UncalledProjection(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.projection = nn.Linear(4, 4, bias=False)
+        def forward(self, input_ids, use_cache=False):
+            return nn.functional.linear(input_ids.float(), self.projection.weight)
+    model = UncalledProjection()
+    with pytest.raises(RuntimeError, match="incomplete PMQ GPTQ"):
+        _capture_many_inputs(model, [model.projection], torch.ones(2, 4), "cpu")
+    assert not model.projection._forward_pre_hooks
