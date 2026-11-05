@@ -36,7 +36,7 @@ def test_sequential_gptq_every_capture_packed_state_and_logits_exact(monkeypatch
         captures.append([[x.clone() for x in batches] for batches in values.values()])
         return values
     monkeypatch.setattr(quant, '_capture_many_inputs', recorded)
-    quant.apply_allocation(reference, adapter, allocation, protocol=protocol(), seed=0, layer_replay=False)
+    quant.apply_allocation(reference, adapter, allocation, protocol=protocol(), seed=0, layer_replay=False, routing_cache=False)
     expected = captures[:];captures.clear()
     quant.apply_allocation(model, adapter, allocation, protocol=protocol(), seed=0)
     assert len(expected) == len(captures) == 6
