@@ -33,41 +33,43 @@ def _decoder_layers(model) -> list[torch.nn.Module]:
     return list(layers)
 
 
-def _capture_inputs(model, module, inputs, device) -> list[torch.Tensor]:
-    captured: list[torch.Tensor] = []
-
-    def capture(_module, args):
-        if not args or not isinstance(args[0], torch.Tensor):
-            raise RuntimeError("PMQ GPTQ module did not receive tensor inputs")
-        captured.append(args[0].detach().cpu())
-
-    handle = module.register_forward_pre_hook(capture)
-    try:
-        with torch.inference_mode():
-            for ids in inputs:
-                model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
-    finally:
-        handle.remove()
-    if len(captured) != len(inputs):
-        raise RuntimeError("incomplete PMQ GPTQ calibration capture")
-    return captured
+def _capture_inputs(model, module, inputs, device, *, stop_after_capture=True) -> list[torch.Tensor]:
+    return _capture_many_inputs(
+        model, [module], inputs, device, stop_after_capture=stop_after_capture
+    )[module]
 
 
-def _capture_many_inputs(model, modules, inputs, device) -> dict[torch.nn.Module, list[torch.Tensor]]:
-    """Capture every independent standard-linear input in one calibration replay."""
+def _capture_many_inputs(model, modules, inputs, device, *, stop_after_capture=True) -> dict[torch.nn.Module, list[torch.Tensor]]:
+    """Capture native inputs, then skip computation after the final target."""
     captured = {module: [] for module in modules}
     handles = []
+    remaining = set(captured)
+
+    class CaptureComplete(Exception):
+        pass
+
+    # Offload hooks need normal post-forward cleanup. Preserve their full path.
+    stop_early = (stop_after_capture and not model.training
+                  and getattr(model.config, "model_type", None) == "qwen3_moe"
+                  and not any(hasattr(child, "_hf_hook") for child in model.modules()))
     for module in modules:
         def capture(_module, args, *, target=module):
             if not args or not isinstance(args[0], torch.Tensor):
                 raise RuntimeError("PMQ GPTQ module did not receive tensor inputs")
             captured[target].append(args[0].detach().cpu())
+            remaining.discard(target)
+            if stop_early and not remaining:
+                raise CaptureComplete
 
         handles.append(module.register_forward_pre_hook(capture))
     try:
         with torch.inference_mode():
             for ids in inputs:
-                model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
+                remaining = set(captured)
+                try:
+                    model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
+                except CaptureComplete:
+                    pass
     finally:
         for handle in handles:
             handle.remove()
