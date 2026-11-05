@@ -150,3 +150,27 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, d
     saved = json.loads((tmp_path / "config.json").read_text())
     assert saved["pmq_quantization"]["attn_implementation"] == "eager"
     assert sha256_file(tmp_path / "qmodel.pt") == digest
+
+
+def test_decoding_releases_scratch_at_each_complete_decoder_boundary():
+    from pmq import evaluation_backend as backend
+    model = tiny_model("qwen3_moe", dtype=torch.float16)
+    # Existing real packed reload tests cover tensor/logit identity. Here the
+    # release callback checks that each complete layer has already been decoded.
+    layers = list(model.model.layers)
+    boundaries = []
+    def release(module):
+        boundaries.append(module)
+        assert not any(isinstance(child, PackedLinear) for child in module.modules())
+    with patch.object(backend, "_release_unused_cuda_memory", side_effect=release):
+        prepare_evaluation_model(model, backend="grouped_cached")
+    assert boundaries[:len(layers)] == layers
+    assert boundaries[len(layers)] is model
+    assert boundaries[len(layers)+1:] == [layer.mlp for layer in layers]
+
+
+def test_cpu_decoder_never_initializes_cuda_for_scratch_release():
+    from pmq.evaluation_backend import _release_unused_cuda_memory
+    with patch.object(torch.cuda, "empty_cache") as clear:
+        _release_unused_cuda_memory(nn.Linear(4, 4))
+    clear.assert_not_called()

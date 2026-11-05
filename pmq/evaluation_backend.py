@@ -24,12 +24,22 @@ class CachedLinear(nn.Module):
         return F.linear(inputs, self.weight, self.bias)
 
 
-def _cache_linears(module):
+def _release_unused_cuda_memory(module):
+    devices = {tensor.device for tensor in (*module.parameters(), *module.buffers())
+               if tensor.device.type == "cuda"}
+    for device in devices:
+        with torch.cuda.device(device):
+            torch.cuda.empty_cache()
+
+
+def _cache_linears(module, *, release_after=frozenset()):
     for name, child in list(module.named_children()):
         if hasattr(child, "W_q") and callable(getattr(child, "dequantize", None)):
             setattr(module, name, CachedLinear(child))
         else:
-            _cache_linears(child)
+            _cache_linears(child, release_after=release_after)
+    if id(module) in release_after:
+        _release_unused_cuda_memory(module)
 
 
 def _layout(experts):
@@ -164,7 +174,10 @@ def prepare_evaluation_model(model, *, backend="auto"):
             if not hasattr(block, "moe_infer") or getattr(block, "ep_size", 1) != 1:
                 raise ValueError("Legacy DeepSeek grouped evaluation requires single-rank moe_infer")
     model.eval()
-    _cache_linears(model)
+    # Bound retained dequantization scratch across decoder layers. On unified
+    # memory devices, inactive CUDA allocations also consume system RAM.
+    _cache_linears(model, release_after={id(layer) for layer in model.model.layers})
+    _release_unused_cuda_memory(model)
     for block in blocks:
         legacy = isinstance(block.experts, nn.ModuleList)
         original_deepseek = kind == "deepseek_v2" and legacy
@@ -174,5 +187,6 @@ def prepare_evaluation_model(model, *, backend="auto"):
         elif legacy:
             attribute = "_old_forward" if hasattr(block, "_hf_hook") else "forward"
             setattr(block, attribute, MethodType(_legacy_forward, block))
+        _release_unused_cuda_memory(block)
     model._pmq_evaluation_backend = "grouped_cached"
     return "grouped_cached"
