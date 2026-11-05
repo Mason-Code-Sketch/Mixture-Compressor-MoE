@@ -48,11 +48,49 @@ def provenance(protocol, *, seed):
             "versions": versions}
 
 
+def _validate_source_inheritance(recorded, expected):
+    """Accept only an explicit, content-bound validation receipt for this origin."""
+    link = recorded.get("source_inheritance")
+    if not isinstance(link, dict) or set(link) != {"receipt", "sha256"}:
+        raise ValueError("PMQ source revision changed; verify artifacts before reuse")
+    path = Path(link["receipt"])
+    if sha256_file(path) != link["sha256"]:
+        raise ValueError("PMQ source inheritance receipt hash mismatch")
+    receipt = json.loads(path.read_text())
+    if receipt.get("schema_version") != 1 or receipt.get("status") != "verified":
+        raise ValueError("PMQ source inheritance receipt is not verified")
+    if (receipt.get("from_commit") != recorded["source_commit"]
+            or receipt.get("to_commit") != expected["source_commit"]):
+        raise ValueError("PMQ source inheritance revisions differ")
+    for key in ("seed", "model_config_sha256", "protocol_config_sha256"):
+        if receipt.get(key) != expected[key]:
+            raise ValueError(f"PMQ source inheritance mismatch: {key}")
+    origin = {key: value for key, value in recorded.items() if key != "source_inheritance"}
+    origin_hash = hashlib.sha256(json.dumps(origin, sort_keys=True).encode()).hexdigest()
+    if receipt.get("origin_provenance_sha256") != origin_hash:
+        raise ValueError("PMQ source inheritance origin differs")
+    files = receipt.get("preserved_files", {})
+    if not files or any(sha256_file(name) != digest for name, digest in files.items()):
+        raise ValueError("PMQ source inheritance artifact hash mismatch")
+    proof_path = Path(receipt["validation_receipt"])
+    if sha256_file(proof_path) != receipt["validation_receipt_sha256"]:
+        raise ValueError("PMQ source inheritance validation hash mismatch")
+    proof = json.loads(proof_path.read_text())
+    if not all(proof.get(key) is True for key in ("accepted", "captures_exact",
+            "real_layer_native_weights_exact", "real_layer_packed_states_exact",
+            "combined_peak_not_increased")):
+        raise ValueError("PMQ source inheritance validation did not pass")
+    if proof.get("source_commit") != receipt.get("validated_capture_commit"):
+        raise ValueError("PMQ source inheritance validation revision differs")
+    if proof.get("capture_speedup", 0) <= 1 or proof.get("quantization_speedup", 0) <= 1:
+        raise ValueError("PMQ source inheritance speed validation did not pass")
+
+
 def validate_provenance(protocol, recorded, *, seed):
-    """Reject reuse from another model, protocol, seed or source revision."""
+    """Reject foreign provenance; require a pinned receipt for verified source reuse."""
     expected = provenance(protocol, seed=seed)
     for key in ("seed", "model_config_sha256", "protocol_config_sha256"):
         if recorded.get(key) != expected[key]:
             raise ValueError(f"PMQ provenance mismatch: {key}")
     if recorded.get("source_commit") and expected["source_commit"] != recorded["source_commit"]:
-        raise ValueError("PMQ source revision changed; verify artifacts before reuse")
+        _validate_source_inheritance(recorded, expected)
