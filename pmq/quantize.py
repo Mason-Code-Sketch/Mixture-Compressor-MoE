@@ -148,7 +148,20 @@ def _routed_inputs(
     hidden_batches: list[torch.Tensor],
     model_config,
     expert: int,
+    routing_indices=None,
 ) -> list[torch.Tensor]:
+    if routing_indices is not None:
+        if len(routing_indices) != len(hidden_batches):
+            raise ValueError("PMQ cached routing sample count differs")
+        routed = []
+        for hidden_cpu, indices in zip(hidden_batches, routing_indices):
+            flat = hidden_cpu.reshape(-1, hidden_cpu.shape[-1])
+            if indices.device.type != "cpu" or indices.ndim != 2 or indices.shape[0] != flat.shape[0]:
+                raise ValueError("PMQ cached routing shape/device differs")
+            values = flat[(indices == int(expert)).any(dim=-1)]
+            if values.numel():
+                routed.append(values.unsqueeze(0))
+        return routed
     routed = []
     device = next(module.parameters()).device
     for hidden_cpu in hidden_batches:
@@ -161,6 +174,26 @@ def _routed_inputs(
         if values.numel():
             routed.append(values.unsqueeze(0).detach().cpu())
     return routed
+
+
+def _cache_routing_indices(module, adapter, hidden_batches, model_config):
+    """Only token-to-expert indices survive; expert activation buffers stay serial."""
+    device = next(module.parameters()).device
+    cached = []
+    for hidden_cpu in hidden_batches:
+        hidden = hidden_cpu.to(device)
+        indices, _weights = adapter.route_state(
+            module, adapter.router_module(module)(hidden), model_config
+        )
+        cached.append(indices.reshape(-1, indices.shape[-1]).detach().cpu())
+    return cached
+
+
+def _can_cache_routing(model, router_bit, device):
+    return (torch.device(device).type == "cuda" and not model.training
+            and int(router_bit) == 16
+            and getattr(model.config, "model_type", None) == "qwen3_moe"
+            and not any(hasattr(child, "_hf_hook") for child in model.modules()))
 
 
 def _expert_down_inputs(
@@ -198,8 +231,9 @@ def _quantize_expert(
     mcmoe_rules: bool = False,
     states=None,
     prefix="",
+    routing_indices=None,
 ) -> None:
-    inputs = _routed_inputs(module, adapter, hidden_batches, model_config, expert)
+    inputs = _routed_inputs(module, adapter, hidden_batches, model_config, expert, routing_indices)
     mixtral = adapter.architecture == "mixtral" and isinstance(module.experts, (torch.nn.ModuleList, list, tuple))
     if mixtral:
         original = {
@@ -320,6 +354,7 @@ def apply_allocation(
     protocol,
     seed: int,
     layer_replay: bool = True,
+    routing_cache: bool = True,
 ) -> None:
     """Materialize one PMQ plan using PMQ's layer-sequential GPTQ pipeline."""
     quantization = resolve_quantization_settings(protocol.data["quantization"])
@@ -348,6 +383,8 @@ def apply_allocation(
     layers = _decoder_layers(model)
     replay = LayerInputs(model, gptq_inputs, device) if layer_replay and can_replay_layers(model, gptq_inputs, device) else None
     LOGGER.info("QUANTIZE_LAYER_REPLAY enabled=%s", replay is not None)
+    cache_routes = routing_cache and _can_cache_routing(model, router_bit, device)
+    LOGGER.info("QUANTIZE_ROUTING_CACHE enabled=%s", cache_routes)
     for layer_index, layer in enumerate(layers):
         LOGGER.info("QUANTIZE_LAYER_START layer=%s total=%s", layer_index, len(layers))
         module = modules.get(layer_index)
@@ -377,6 +414,7 @@ def apply_allocation(
                 replay.advance(layer)
             continue
         hidden_batches = _capture_inputs(model, module, gptq_inputs, device, **capture_options)
+        routing_indices = _cache_routing_indices(module, adapter, hidden_batches, model.config) if cache_routes else None
         for expert in range(adapter.num_experts(module)):
             key = (int(layer_index), expert)
             if key not in allocation:
@@ -392,7 +430,9 @@ def apply_allocation(
                 group_size=group_size,
                 percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
                 states=states, prefix=f"{module_names[id(module)]}.experts.{expert}",
+                routing_indices=routing_indices,
             )
+        del routing_indices
         shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
         _quantize_shared_expert(
             module,
