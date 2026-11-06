@@ -1,6 +1,7 @@
 """Standalone native PMQ phases with original artifact formats."""
 
 from __future__ import annotations
+from pmq.batch_profiles import resolve_cli_batch_cap
 
 import argparse
 import json
@@ -48,10 +49,11 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=batch_size, default=None,
                         help="Evaluation batch size (default: auto)")
     parser.add_argument("--max-batch-size", type=positive_int, default=None,
-                        help="Auto batch cap: zeroshot=51, mmlu_5shot=17, gsm8k_0shot=96")
+                        help="Auto batch cap by model (seven/MMLU5shot/GSM0shot): Mixtral=34/8/48; others=51/17/96")
     parser.add_argument("--limit", type=int, help="Supplemental smoke only; no formal result written")
     parser.add_argument("--monitor-interval", type=float, default=5)
     args = parser.parse_args(argv)
+    args._max_batch_size_explicit = args.max_batch_size is not None
     if (args.batch_size is not None or args.max_batch_size is not None) and args.phase not in ("zeroshot", "mmlu_5shot", "gsm8k_0shot"):
         parser.error("--batch-size and --max-batch-size require a zeroshot or supplemental phase")
     if args.batch_size is None:
@@ -200,6 +202,7 @@ def main(argv=None):
                 with component("load_model"):
                     model = load_zeroshot_model(checkpoint)
                     tokenizer = load_tokenizer(checkpoint)
+                resolve_cli_batch_cap(args, model, args.phase)
                 with component("evaluate_zeroshot"):
                     output = evaluate_seven(model, tokenizer, checkpoint, seed=args.seed,
                                             batch_size=args.batch_size, max_batch_size=args.max_batch_size)

@@ -1,6 +1,7 @@
 """Seven-task zero-shot evaluation of the saved native PMQ checkpoint."""
 
 from __future__ import annotations
+from pmq.batch_profiles import auto_batch_cap
 
 from pathlib import Path
 from importlib.metadata import version
@@ -42,7 +43,7 @@ def summarize_seven(raw):
     return {"tasks": selected, "mean": sum(value["value"] for value in selected.values()) / len(SEVEN_TASKS)}
 
 
-def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0, batch_size="auto", max_batch_size=51):
+def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0, batch_size="auto", max_batch_size=None):
     from lm_eval import evaluator
     from lm_eval.models.huggingface import HFLM
 
@@ -52,6 +53,7 @@ def evaluate_seven(model, tokenizer, checkpoint_dir, *, seed=0, batch_size="auto
     output = checkpoint_dir / "zeroshot.json"
     if output.exists():
         raise FileExistsError(f"seven-task result already exists: {output}")
+    max_batch_size = auto_batch_cap(model, "seven", max_batch_size)
     model.eval()
     from pmq.evaluation_backend import prepare_evaluation_model
     backend = prepare_evaluation_model(model)
