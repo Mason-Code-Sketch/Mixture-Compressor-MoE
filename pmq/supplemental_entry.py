@@ -1,4 +1,5 @@
 """Supplemental PMQ evaluation, preserving completed seven-task receipts."""
+from pmq.batch_profiles import resolve_cli_batch_cap
 import json
 from pathlib import Path
 
@@ -34,6 +35,7 @@ def run(args, protocol, output_dir):
             tokenizer = load_tokenizer(checkpoint)
             from pmq.evaluation_backend import prepare_evaluation_model
             backend = prepare_evaluation_model(model)
+        resolve_cli_batch_cap(args, model, args.phase)
         with component(args.phase):
             payload = evaluate(model, tokenizer, args.phase, seed=args.seed, batch_size=args.batch_size,
                                max_batch_size=args.max_batch_size, limit=args.limit)
