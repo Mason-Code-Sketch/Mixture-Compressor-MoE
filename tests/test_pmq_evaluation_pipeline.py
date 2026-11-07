@@ -9,7 +9,7 @@ import torch
 import yaml
 
 
-@pytest.mark.parametrize("batch_args,batch,cap", [([], "auto", 51), (["--batch-size", "2", "--max-batch-size", "4"], 2, 4)])
+@pytest.mark.parametrize("batch_args,batch,cap", [([], "auto", 32), (["--batch-size", "2", "--max-batch-size", "4"], 2, 4)])
 def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path, batch_args, batch, cap):
     from datasets import Dataset, DatasetDict
     from tokenizers import Tokenizer, models, pre_tokenizers
@@ -81,25 +81,25 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path, batch_ar
     # New supplemental evaluations reuse a completed checkpoint and leave completion intact.
     completion_before = (checkpoint / "complete.json").read_bytes()
     from test_supplemental import raw_result
-    for profile in ("mmlu_5shot", "gsm8k_0shot"):
+    for profile in ("mmlu_5shot", "gsm8k_5shot"):
         with patch("lm_eval.models.huggingface.HFLM") as wrapped, patch("lm_eval.evaluator.simple_evaluate", return_value=raw_result(profile)):
             main(common + ["--phase", profile, "--log-dir", str(output / "batch-logs")] + batch_args)
         assert wrapped.call_args.kwargs['batch_size'] == batch
-        assert wrapped.call_args.kwargs['max_batch_size'] == (cap if batch_args else {'mmlu_5shot': 17, 'gsm8k_0shot': 96}[profile])
+        assert wrapped.call_args.kwargs['max_batch_size'] == (cap if batch_args else {'mmlu_5shot': 24, 'gsm8k_5shot': 128}[profile])
         saved = json.loads((checkpoint / (profile + ".json")).read_text())
-        assert saved["protocol"]["num_fewshot"] == (5 if profile == "mmlu_5shot" else 0)
+        assert saved["protocol"]["num_fewshot"] == 5
         assert Path(saved["experiment"]["log_path"]).is_file()
         assert saved["experiment"]["checkpoint_sha256"] == digest
     assert (checkpoint / "complete.json").read_bytes() == completion_before
     assert sha256_file(checkpoint / "qmodel.pt") == digest
 
 
-@pytest.mark.parametrize("profile", ["zeroshot", "mmlu_5shot", "gsm8k_0shot"])
+@pytest.mark.parametrize("profile", ["zeroshot", "mmlu_5shot", "gsm8k_5shot"])
 def test_supplemental_batch_options(profile):
     from pmq_runner import parse_args
     common = ["--config", "model.yaml", "--phase", profile]
     defaults = parse_args(common)
-    assert (defaults.batch_size, defaults.max_batch_size) == ("auto", {"zeroshot": 51, "mmlu_5shot": 17, "gsm8k_0shot": 96}[profile])
+    assert (defaults.batch_size, defaults.max_batch_size) == ("auto", {"zeroshot": 51, "mmlu_5shot": 17, "gsm8k_5shot": 96}[profile])
     fixed = parse_args(common + ["--batch-size", "2", "--max-batch-size", "4"])
     assert (fixed.batch_size, fixed.max_batch_size) == (2, 4)
     auto = parse_args(common + ["--batch-size", "auto", "--max-batch-size", "4"])
@@ -110,7 +110,7 @@ def test_supplemental_batch_options(profile):
 def test_invalid_supplemental_batch_options(flag, value):
     from pmq_runner import parse_args
     with pytest.raises(SystemExit):
-        parse_args(["--config", "model.yaml", "--phase", "gsm8k_0shot", flag, value])
+        parse_args(["--config", "model.yaml", "--phase", "gsm8k_5shot", flag, value])
 
 
 @pytest.mark.parametrize("flag", ["--batch-size", "--max-batch-size"])
