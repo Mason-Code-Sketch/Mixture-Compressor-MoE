@@ -36,7 +36,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Standalone PMQ protocol runner")
     parser.add_argument("--config", required=True)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--phase", choices=("factors", "allocate", "quantize", "ppl", "zeroshot", "evaluate", "mmlu_5shot", "gsm8k_0shot"), required=True)
+    parser.add_argument("--phase", choices=("factors", "allocate", "quantize", "ppl", "zeroshot", "evaluate", "mmlu_5shot", "gsm8k_5shot"), required=True)
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--factors-path", default=None, help="Directory containing the original three PKLs, or a legacy factors PT")
     parser.add_argument("--allocation-path", default=None)
@@ -47,20 +47,20 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=batch_size, default=None,
                         help="Evaluation batch size (default: auto)")
     parser.add_argument("--max-batch-size", type=positive_int, default=None,
-                        help="Auto batch cap by model (seven/MMLU5shot/GSM0shot): Mixtral=34/8/48; others=51/17/96")
+                        help="Auto batch cap by model (seven/MMLU5shot/GSM5shot): Mixtral=34/8/48; others=51/17/96")
     parser.add_argument("--limit", type=int, help="Supplemental smoke only; no formal result written")
     parser.add_argument("--monitor-interval", type=float, default=5)
     args = parser.parse_args(argv)
     args._max_batch_size_explicit = args.max_batch_size is not None
-    if (args.batch_size is not None or args.max_batch_size is not None) and args.phase not in ("zeroshot", "mmlu_5shot", "gsm8k_0shot"):
+    if (args.batch_size is not None or args.max_batch_size is not None) and args.phase not in ("zeroshot", "mmlu_5shot", "gsm8k_5shot"):
         parser.error("--batch-size and --max-batch-size require a zeroshot or supplemental phase")
     if args.batch_size is None:
         args.batch_size = "auto"
     if args.max_batch_size is None:
-        args.max_batch_size = {"mmlu_5shot": 17, "gsm8k_0shot": 96}.get(args.phase, 51)
-    if args.limit is not None and (args.limit < 1 or args.phase not in ("mmlu_5shot", "gsm8k_0shot")):
+        args.max_batch_size = {"mmlu_5shot": 17, "gsm8k_5shot": 96}.get(args.phase, 51)
+    if args.limit is not None and (args.limit < 1 or args.phase not in ("mmlu_5shot", "gsm8k_5shot")):
         parser.error("--limit requires a supplemental phase and a positive count")
-    if args.log_dir is not None and args.phase not in ("mmlu_5shot", "gsm8k_0shot"):
+    if args.log_dir is not None and args.phase not in ("mmlu_5shot", "gsm8k_5shot"):
         parser.error("--log-dir applies only to supplemental phases")
     return args
 
@@ -157,7 +157,7 @@ def main(argv=None):
     protocol = load_protocol_config(args.config)
     output_dir = _output_dir(protocol, args.out_dir)
     phase_name = args.phase + (f"_avg{args.average_bit:g}" if args.average_bit is not None else "")
-    if args.phase in ("mmlu_5shot", "gsm8k_0shot"):
+    if args.phase in ("mmlu_5shot", "gsm8k_5shot"):
         from pmq.supplemental_entry import run
         return run(args, protocol, output_dir)
     with RunMonitor(output_dir / "logs", phase_name, interval=args.monitor_interval):
