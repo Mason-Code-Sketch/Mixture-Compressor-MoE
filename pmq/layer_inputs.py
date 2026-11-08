@@ -1,21 +1,38 @@
-"""Bounded CPU decoder-input reuse for native Qwen3 sequential GPTQ."""
+"""Bounded CPU decoder-input reuse for native MoE sequential GPTQ."""
 from __future__ import annotations
 
 import torch
 
 
+_DECODER_TYPES = {
+    "deepseek_v2": "DeepseekV2DecoderLayer",
+    "qwen2_moe": "Qwen2MoeDecoderLayer",
+    "qwen3_moe": "Qwen3MoeDecoderLayer",
+    "mixtral": "MixtralDecoderLayer",
+}
+
+
+def can_capture_native_layers(model):
+    """Restrict early capture and replay to inspected, cache-free decoder layouts."""
+    layers = getattr(getattr(model, "model", None), "layers", ())
+    expected = _DECODER_TYPES.get(getattr(model.config, "model_type", None))
+    return (not model.training and expected is not None and len(layers) > 0
+            and not any(hasattr(m, "_hf_hook") for m in model.modules())
+            and all(type(layer).__name__ == expected
+                    and all(hasattr(layer, name) for name in
+                            ("self_attn", "input_layernorm", "post_attention_layernorm", "mlp"))
+                    for layer in layers))
+
+
 def can_replay_layers(model, inputs, device):
     """CUDA captures own CPU copies; sharing Q/K/V pays for one input buffer."""
-    layers = getattr(getattr(model, "model", None), "layers", ())
-    return (torch.device(device).type == "cuda" and not model.training
-            and getattr(model.config, "model_type", None) == "qwen3_moe"
+    # A single metadata object is valid only when every layer uses the same mask.
+    layer_types = getattr(model.config, "layer_types", None)
+    return (torch.device(device).type == "cuda" and can_capture_native_layers(model)
             and getattr(model.config, "_attn_implementation", None) == "eager"
-            and len(inputs) > 0 and len(layers) > 0
+            and len(inputs) > 0
             and all(ids.ndim == 1 and ids.shape == inputs[0].shape for ids in inputs)
-            and not any(hasattr(m, "_hf_hook") for m in model.modules())
-            and all(type(layer).__name__ == "Qwen3MoeDecoderLayer"
-                    and all(hasattr(layer.self_attn, name) for name in ("q_proj", "k_proj", "v_proj"))
-                    for layer in layers))
+            and (not layer_types or len(set(layer_types)) == 1))
 
 
 class LayerInputs:
@@ -62,7 +79,11 @@ class LayerInputs:
     def advance(self, layer):
         for sample, buffer in enumerate(self.buffers):
             output = self.forward(layer, sample)
-            if not torch.is_tensor(output) or output.shape != buffer.shape:
+            # Checkpoint-owned older decoders return (hidden_states, ...).
+            if isinstance(output, (tuple, list)) and output:
+                output = output[0]
+            if (not torch.is_tensor(output) or output.shape != buffer.shape
+                    or output.dtype != buffer.dtype):
                 raise RuntimeError("Unsupported decoder output interface")
             # No second sample-sized CPU buffer or GPU-resident activation cache.
             buffer.copy_(output.detach())
