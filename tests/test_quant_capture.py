@@ -74,7 +74,7 @@ def test_complete_gptq_packed_states_and_logits_unchanged(monkeypatch, dtype):
     with monkeypatch.context() as m:
         m.setattr(quant, "_capture_inputs", partial(single, stop_after_capture=False))
         m.setattr(quant, "_capture_many_inputs", partial(many, stop_after_capture=False))
-        quant.apply_allocation(reference, adapter, allocation, protocol=protocol, seed=0, layer_replay=False, routing_cache=False)
+        quant.apply_allocation(reference, adapter, allocation, protocol=protocol, seed=0)
     quant.apply_allocation(model, adapter, allocation, protocol=protocol, seed=0)
     expected, actual = reference.state_dict(), model.state_dict()
     assert expected.keys() == actual.keys()

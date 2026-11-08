@@ -13,7 +13,6 @@ from pmq.config import resolve_quantization_settings
 from pmq.gptq import TensorGPTQ
 from pmq.runtime import input_device, load_tokenizer
 from pmq.monitor import LOGGER, progress
-from pmq.layer_inputs import LayerInputs, can_replay_layers, can_capture_native_layers
 from utils.normal_quantizer import normal_quantize
 
 
@@ -34,38 +33,30 @@ def _decoder_layers(model) -> list[torch.nn.Module]:
     return list(layers)
 
 
-def _capture_inputs(model, module, inputs, device, *, stop_after_capture=True, forward_sample=None, deduplicate_inputs=False) -> list[torch.Tensor]:
+def _capture_inputs(model, module, inputs, device, *, stop_after_capture=True) -> list[torch.Tensor]:
     return _capture_many_inputs(
-        model, [module], inputs, device, stop_after_capture=stop_after_capture,
-        forward_sample=forward_sample, deduplicate_inputs=deduplicate_inputs
+        model, [module], inputs, device, stop_after_capture=stop_after_capture
     )[module]
 
 
-def _capture_many_inputs(model, modules, inputs, device, *, stop_after_capture=True, forward_sample=None, deduplicate_inputs=False) -> dict[torch.nn.Module, list[torch.Tensor]]:
+def _capture_many_inputs(model, modules, inputs, device, *, stop_after_capture=True) -> dict[torch.nn.Module, list[torch.Tensor]]:
     """Capture native inputs, then skip computation after the final target."""
     captured = {module: [] for module in modules}
     handles = []
     remaining = set(captured)
-    sample_copies = {}
 
     class CaptureComplete(Exception):
         pass
 
     # Offload hooks need normal post-forward cleanup. Preserve their full path.
-    stop_early = stop_after_capture and can_capture_native_layers(model)
+    stop_early = (stop_after_capture and not model.training
+                  and getattr(model.config, "model_type", None) == "qwen3_moe"
+                  and not any(hasattr(child, "_hf_hook") for child in model.modules()))
     for module in modules:
         def capture(_module, args, *, target=module):
             if not args or not isinstance(args[0], torch.Tensor):
                 raise RuntimeError("PMQ GPTQ module did not receive tensor inputs")
-            value = args[0]
-            if deduplicate_inputs:
-                cached = sample_copies.get(id(value))
-                if cached is None:
-                    cached = (value, value.detach().cpu())
-                    sample_copies[id(value)] = cached
-                captured[target].append(cached[1])
-            else:
-                captured[target].append(value.detach().cpu())
+            captured[target].append(args[0].detach().cpu())
             remaining.discard(target)
             if stop_early and not remaining:
                 raise CaptureComplete
@@ -73,14 +64,10 @@ def _capture_many_inputs(model, modules, inputs, device, *, stop_after_capture=T
         handles.append(module.register_forward_pre_hook(capture))
     try:
         with torch.inference_mode():
-            for sample, ids in enumerate(inputs):
+            for ids in inputs:
                 remaining = set(captured)
-                sample_copies.clear()
                 try:
-                    if forward_sample is None:
-                        model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
-                    else:
-                        forward_sample(sample)
+                    model(input_ids=ids.unsqueeze(0).to(device), use_cache=False)
                 except CaptureComplete:
                     pass
     finally:
@@ -146,20 +133,7 @@ def _routed_inputs(
     hidden_batches: list[torch.Tensor],
     model_config,
     expert: int,
-    routing_indices=None,
 ) -> list[torch.Tensor]:
-    if routing_indices is not None:
-        if len(routing_indices) != len(hidden_batches):
-            raise ValueError("PMQ cached routing sample count differs")
-        routed = []
-        for hidden_cpu, indices in zip(hidden_batches, routing_indices):
-            flat = hidden_cpu.reshape(-1, hidden_cpu.shape[-1])
-            if indices.device.type != "cpu" or indices.ndim != 2 or indices.shape[0] != flat.shape[0]:
-                raise ValueError("PMQ cached routing shape/device differs")
-            values = flat[(indices == int(expert)).any(dim=-1)]
-            if values.numel():
-                routed.append(values.unsqueeze(0))
-        return routed
     routed = []
     device = next(module.parameters()).device
     for hidden_cpu in hidden_batches:
@@ -172,24 +146,6 @@ def _routed_inputs(
         if values.numel():
             routed.append(values.unsqueeze(0).detach().cpu())
     return routed
-
-
-def _cache_routing_indices(module, adapter, hidden_batches, model_config):
-    """Only token-to-expert indices survive; expert activation buffers stay serial."""
-    device = next(module.parameters()).device
-    cached = []
-    for hidden_cpu in hidden_batches:
-        hidden = hidden_cpu.to(device)
-        indices, _weights = adapter.route_state(
-            module, adapter.router_module(module)(hidden), model_config
-        )
-        cached.append(indices.reshape(-1, indices.shape[-1]).detach().cpu())
-    return cached
-
-
-def _can_cache_routing(model, router_bit, device):
-    return (torch.device(device).type == "cuda" and can_capture_native_layers(model)
-            and int(router_bit) == 16)
 
 
 def _expert_down_inputs(
@@ -227,9 +183,8 @@ def _quantize_expert(
     mcmoe_rules: bool = False,
     states=None,
     prefix="",
-    routing_indices=None,
 ) -> None:
-    inputs = _routed_inputs(module, adapter, hidden_batches, model_config, expert, routing_indices)
+    inputs = _routed_inputs(module, adapter, hidden_batches, model_config, expert)
     mixtral = adapter.architecture == "mixtral" and isinstance(module.experts, (torch.nn.ModuleList, list, tuple))
     if mixtral:
         original = {
@@ -349,8 +304,6 @@ def apply_allocation(
     *,
     protocol,
     seed: int,
-    layer_replay: bool = True,
-    routing_cache: bool = True,
 ) -> None:
     """Materialize one PMQ plan using PMQ's layer-sequential GPTQ pipeline."""
     quantization = resolve_quantization_settings(protocol.data["quantization"])
@@ -377,19 +330,13 @@ def apply_allocation(
     module_names = {id(module): name for name, module in model.named_modules()}
     states = {}
     layers = _decoder_layers(model)
-    replay = LayerInputs(model, gptq_inputs, device) if layer_replay and can_replay_layers(model, gptq_inputs, device) else None
-    LOGGER.info("QUANTIZE_LAYER_REPLAY enabled=%s", replay is not None)
-    cache_routes = routing_cache and _can_cache_routing(model, router_bit, device)
-    LOGGER.info("QUANTIZE_ROUTING_CACHE enabled=%s", cache_routes)
     for layer_index, layer in enumerate(layers):
         LOGGER.info("QUANTIZE_LAYER_START layer=%s total=%s", layer_index, len(layers))
         module = modules.get(layer_index)
         router = adapter.router_module(module) if module is not None else None
         standard_named_linears = _standard_linears(layer, module)
         standard_linears = [linear for _name, linear in standard_named_linears]
-        capture_options = ({"forward_sample": lambda sample: replay.forward(layer, sample),
-                            "deduplicate_inputs": True} if replay is not None else {})
-        standard_inputs = _capture_many_inputs(model, standard_linears, gptq_inputs, device, **capture_options)
+        standard_inputs = _capture_many_inputs(model, standard_linears, gptq_inputs, device)
         for name, linear in standard_named_linears:
             bit = router_bit if linear is router or name.endswith("shared_expert_gate") else standard_bit
             if bit >= 16:
@@ -406,11 +353,8 @@ def apply_allocation(
             )
         del standard_inputs
         if module is None:
-            if replay is not None and layer_index + 1 < len(layers):
-                replay.advance(layer)
             continue
-        hidden_batches = _capture_inputs(model, module, gptq_inputs, device, **capture_options)
-        routing_indices = _cache_routing_indices(module, adapter, hidden_batches, model.config) if cache_routes else None
+        hidden_batches = _capture_inputs(model, module, gptq_inputs, device)
         for expert in range(adapter.num_experts(module)):
             key = (int(layer_index), expert)
             if key not in allocation:
@@ -426,9 +370,7 @@ def apply_allocation(
                 group_size=group_size,
                 percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
                 states=states, prefix=f"{module_names[id(module)]}.experts.{expert}",
-                routing_indices=routing_indices,
             )
-        del routing_indices
         shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
         _quantize_shared_expert(
             module,
@@ -440,12 +382,9 @@ def apply_allocation(
             states=states, prefix=module_names.get(id(shared), ""),
         )
         del hidden_batches
-        if replay is not None and layer_index + 1 < len(layers):
-            replay.advance(layer)
         progress("QUANTIZE_LAYER_COMPLETE", layer_index + 1, len(layers))
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    del replay
     from pmq.packed import install_packed_model
     install_packed_model(model, adapter, states)
