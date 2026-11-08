@@ -13,7 +13,7 @@ from pmq.config import resolve_quantization_settings
 from pmq.gptq import TensorGPTQ
 from pmq.runtime import input_device, load_tokenizer
 from pmq.monitor import LOGGER, progress
-from pmq.layer_inputs import LayerInputs, can_replay_layers
+from pmq.layer_inputs import LayerInputs, can_replay_layers, can_capture_native_layers
 from utils.normal_quantizer import normal_quantize
 
 
@@ -52,9 +52,7 @@ def _capture_many_inputs(model, modules, inputs, device, *, stop_after_capture=T
         pass
 
     # Offload hooks need normal post-forward cleanup. Preserve their full path.
-    stop_early = (stop_after_capture and not model.training
-                  and getattr(model.config, "model_type", None) == "qwen3_moe"
-                  and not any(hasattr(child, "_hf_hook") for child in model.modules()))
+    stop_early = stop_after_capture and can_capture_native_layers(model)
     for module in modules:
         def capture(_module, args, *, target=module):
             if not args or not isinstance(args[0], torch.Tensor):
@@ -190,10 +188,8 @@ def _cache_routing_indices(module, adapter, hidden_batches, model_config):
 
 
 def _can_cache_routing(model, router_bit, device):
-    return (torch.device(device).type == "cuda" and not model.training
-            and int(router_bit) == 16
-            and getattr(model.config, "model_type", None) == "qwen3_moe"
-            and not any(hasattr(child, "_hf_hook") for child in model.modules()))
+    return (torch.device(device).type == "cuda" and can_capture_native_layers(model)
+            and int(router_bit) == 16)
 
 
 def _expert_down_inputs(
