@@ -85,7 +85,7 @@ def test_saved_checkpoint_phases_use_resident_grouped_backend(tmp_path, batch_ar
         with patch("lm_eval.models.huggingface.HFLM") as wrapped, patch("lm_eval.evaluator.simple_evaluate", return_value=raw_result(profile)):
             main(common + ["--phase", profile, "--log-dir", str(output / "batch-logs")] + batch_args)
         assert wrapped.call_args.kwargs['batch_size'] == batch
-        assert wrapped.call_args.kwargs['max_batch_size'] == (cap if batch_args else {'mmlu_5shot': 24, 'gsm8k_5shot': 128}[profile])
+        assert wrapped.call_args.kwargs['max_batch_size'] == (cap if batch_args else {'mmlu_5shot': 24, 'gsm8k_5shot': 56}[profile])
         saved = json.loads((checkpoint / (profile + ".json")).read_text())
         assert saved["protocol"]["num_fewshot"] == 5
         assert Path(saved["experiment"]["log_path"]).is_file()

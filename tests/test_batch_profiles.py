@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import pytest
 from pmq.batch_profiles import auto_batch_cap, resolve_cli_batch_cap
 
-@pytest.mark.parametrize("model_type,caps", [("mixtral", [34, 13, 48]), ("deepseek_v2", [32, 24, 20]), ("qwen2_moe", [32, 24, 56]), ("qwen3_moe", [51, 60, 96]), ("unknown", [51, 17, 96])])
+@pytest.mark.parametrize("model_type,caps", [("mixtral", [34, 10, 13]), ("deepseek_v2", [32, 24, 20]), ("qwen2_moe", [32, 24, 56]), ("qwen3_moe", [51, 59, 84]), ("unknown", [51, 17, 96])])
 def test_model_profiles_and_explicit_override(model_type, caps):
     model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
     for profile, cap in zip(["seven", "mmlu_5shot", "gsm8k_5shot"], caps):
@@ -42,7 +42,7 @@ def test_loaded_model_cap_reaches_harness_and_saved_result(tmp_path, model_type,
     assert wrapper.call_args.kwargs["max_batch_size"] == expected
     assert json.loads((tmp_path / "zeroshot.json").read_text())["experiment"]["max_batch_size"] == expected
 
-@pytest.mark.parametrize("profile,cap", [("mmlu_5shot", 13), ("gsm8k_5shot", 48)])
+@pytest.mark.parametrize("profile,cap", [("mmlu_5shot", 10), ("gsm8k_5shot", 13)])
 def test_supplemental_cli_resolves_after_loading(profile, cap):
     args = parse_args(["--config", "model.yaml", "--phase", profile])
     assert resolve_cli_batch_cap(args, SimpleNamespace(config=SimpleNamespace(model_type="mixtral")), profile) == cap
