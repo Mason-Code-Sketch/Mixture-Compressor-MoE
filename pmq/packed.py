@@ -218,7 +218,12 @@ def load_packed_model(directory, *, device_map="auto", dtype=None, attn_implemen
             mapping.update({f"model.layers.{index}": min(count - 1, index * count // len(layers))
                             for index in range(len(layers))})
             from accelerate import dispatch_model
-            model = dispatch_model(model, device_map=mapping, force_hooks=True)
+            # Single-device DGX evaluation needs no cross-device forward hooks.
+            # Hook discovery calls our serialization state_dict repeatedly and
+            # copies packed CUDA buffers back to CPU. Keep multi-device and
+            # other-model dispatch unchanged.
+            force_hooks = count != 1 or config.model_type not in {"qwen3_moe", "mixtral"}
+            model = dispatch_model(model, device_map=mapping, force_hooks=force_hooks)
         else:
             model = model.to("cpu")
     elif isinstance(device_map, (str, torch.device)):

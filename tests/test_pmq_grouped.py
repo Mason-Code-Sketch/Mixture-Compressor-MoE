@@ -113,6 +113,20 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, d
     save_packed_model(model, Tokenizer(), tmp_path)
     digest = sha256_file(tmp_path / "qmodel.pt")
     reloaded = load_packed_model(tmp_path, device_map=device)
+    if device == "cpu":
+        # Exercise auto dispatch without CUDA allocation: the reconstructed CPU
+        # checkpoint must still reproduce the same logits and device map.
+        for gpu_count in (1, 2):
+            captured = {}
+            def dispatch(loaded, *, device_map, force_hooks):
+                captured.update(mapping=device_map, hooks=force_hooks)
+                return loaded
+            with patch("torch.cuda.is_available", return_value=True), patch("torch.cuda.device_count", return_value=gpu_count), patch("accelerate.dispatch_model", side_effect=dispatch):
+                auto = load_packed_model(tmp_path)
+            assert captured["hooks"] == (gpu_count != 1 or kind not in {"qwen3_moe", "mixtral"})
+            assert set(captured["mapping"].values()) == set(range(gpu_count))
+            with torch.inference_mode():
+                torch.testing.assert_close(auto(ids, use_cache=False).logits, reference, rtol=0, atol=0)
     with torch.inference_mode():
         torch.testing.assert_close(reloaded(ids, use_cache=False).logits, reference, rtol=0, atol=0)
         original_decode = PackedLinear.dequantize
