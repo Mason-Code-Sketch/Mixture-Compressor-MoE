@@ -112,7 +112,9 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, d
             Path(path, "tokenizer_config.json").write_text("{}")
     save_packed_model(model, Tokenizer(), tmp_path)
     digest = sha256_file(tmp_path / "qmodel.pt")
-    reloaded = load_packed_model(tmp_path, device_map=device)
+    with patch("torch.load", wraps=torch.load) as checkpoint_load:
+        reloaded = load_packed_model(tmp_path, device_map=device)
+    assert checkpoint_load.call_args.kwargs["mmap"] == (kind in {"qwen3_moe", "mixtral"})
     if device == "cpu":
         # Exercise auto dispatch without CUDA allocation: the reconstructed CPU
         # checkpoint must still reproduce the same logits and device map.

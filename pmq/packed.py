@@ -183,7 +183,10 @@ def load_packed_model(directory, *, device_map="auto", dtype=None, attn_implemen
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(config, **kwargs)
     # Keep tensors in CPU RAM until leaf modules have been reconstructed.
-    weights = torch.load(directory / "qmodel.pt", map_location="cpu", weights_only=False)
+    # Avoid anonymous CPU copies of the entire packed checkpoint on DGX.
+    # Model construction and CUDA transfer retain the same saved tensors.
+    weights = torch.load(directory / "qmodel.pt", map_location="cpu", weights_only=False,
+                         mmap=config.model_type in {"qwen3_moe", "mixtral"})
     for name, details in metadata["fused_experts"].items():
         original = model.get_submodule(name)
         entries = [
