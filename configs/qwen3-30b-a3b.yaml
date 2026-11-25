@@ -2,7 +2,7 @@ model:
   name: Qwen3-30B-A3B
   id: Qwen3-30B-A3B
   architecture: qwen3_moe
-  dtype: float16
+  dtype: bfloat16
   attn_implementation: eager
 
 

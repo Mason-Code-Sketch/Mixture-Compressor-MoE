@@ -51,7 +51,7 @@ def align_deepseek_softmax_scale(model) -> int:
 
 def load_model(protocol):
     settings = protocol.data["model"]
-    dtype = getattr(torch, str(settings.get("dtype", "float16")))
+    dtype = getattr(torch, str(settings.get("dtype", "bfloat16")))
     native_deepseek = _native_deepseek(protocol.model_path)
     kwargs = {
         "torch_dtype": dtype,

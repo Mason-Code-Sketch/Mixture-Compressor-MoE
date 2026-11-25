@@ -98,7 +98,7 @@ def _candidate_loss_for_layer_reference(
                 adapter.set_expert_weights(
                     module,
                     expert,
-                    quantized_weights(original, bit=int(bit), group_size=group_size),
+                    quantized_weights(original, bit=int(bit), group_size=group_size, mcmoe_rules=adapter.architecture == "mixtral"),
                 )
                 loss = 0.0
                 for hidden, reference in zip(inputs, outputs):
@@ -128,7 +128,7 @@ def _candidate_loss_for_layer(*, module, adapter, inputs, outputs, bits, group_s
     for expert in range(count):
         weights = adapter.expert_weights(module, expert)
         candidates.append([{name: value.cpu() for name, value in
-            quantized_weights(weights, bit=int(bit), group_size=group_size).items()}
+            quantized_weights(weights, bit=int(bit), group_size=group_size, mcmoe_rules=adapter.architecture == "mixtral").items()}
             for bit in bits])
     losses = torch.zeros((count, len(bits)), device=device, dtype=torch.float64)
     # Eight samples bound the GPU contribution cache; other chunks remain on CPU.

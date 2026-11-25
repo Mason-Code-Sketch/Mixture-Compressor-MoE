@@ -33,12 +33,15 @@ def test_low_bit_block_and_cross_block_compensation(bits, dtype):
             remaining[:, start+4:] -= error @ factor[start:start+4, start+4:]
         else:
             # Attention retains the full sequential compensation.
+            errors = torch.empty_like(remaining[:, start:start+4])
             for col in range(start, start+4):
                 value = remaining[:, col].clone()
                 quant = _quantize_uniform(value, bits, scale, zero)
                 expected[:, col] = quant
                 error = (value - quant) / factor[col, col]
-                remaining[:, col:] -= error[:, None] @ factor[col:col+1, col:]
+                remaining[:, col:start+4] -= error[:, None] @ factor[col:col+1, col:start+4]
+                errors[:, col-start] = error
+            remaining[:, start+4:] -= errors @ factor[start:start+4, start+4:]
     actual = solver.quantize(group_size=4, percdamp=.01)
     torch.testing.assert_close(actual, expected.to(dtype), rtol=0, atol=0)
     assert torch.equal(PackedLinear(solver.packed_state).dequantize(), actual)
@@ -54,9 +57,9 @@ def test_range_and_unrounded_zero(bits):
         solver.find_params(w, weight=True)
     assert call.call_count == 101
     scales = torch.stack([c.args[1].flatten() for c in call.call_args_list])
-    base = ((w.half().amax(1) - w.half().amin(1)) / (2**bits-1))
-    torch.testing.assert_close((scales/base).max(0).values, torch.full((2,), 1.1).half(), rtol=.003, atol=.003)
-    torch.testing.assert_close((scales/base).min(0).values, torch.full((2,), .9).half(), rtol=.003, atol=.003)
+    base = ((w.float().amax(1) - w.float().amin(1)) / (2**bits-1))
+    torch.testing.assert_close((scales/base).max(0).values, torch.full((2,), 1.1), rtol=.003, atol=.003)
+    torch.testing.assert_close((scales/base).min(0).values, torch.full((2,), .9), rtol=.003, atol=.003)
     assert torch.any(solver.zero != solver.zero.round())
 
 

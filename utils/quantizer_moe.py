@@ -85,9 +85,9 @@ class Quantizer(nn.Module):
             raise ValueError("mcmoe_rules must be boolean")
         self.mcmoe_rules = mcmoe_rules
         self._params_ready = False
-        self.register_buffer('maxq', torch.tensor(0, dtype=torch.float16))
-        self.register_buffer('scale', torch.zeros(shape, dtype=torch.float16))
-        self.register_buffer('zero', torch.zeros(shape, dtype=torch.float16))
+        self.register_buffer('maxq', torch.tensor(0, dtype=torch.float32))
+        self.register_buffer('scale', torch.zeros(shape, dtype=torch.float32))
+        self.register_buffer('zero', torch.zeros(shape, dtype=torch.float32))
 
     def configure(self, bits, perchannel=False, sym=False, mse=True, norm=2.4, grid=100, maxshrink=.8, trits=False, pack=False):
 
@@ -111,7 +111,7 @@ class Quantizer(nn.Module):
         self.norm = norm
         self.grid = grid
         self.maxshrink = maxshrink
-        self.scale = torch.zeros_like(self.scale, dtype=torch.float16)
+        self.scale = torch.zeros_like(self.scale, dtype=torch.float32)
         self.pack = pack
 
     def _quantize(self, x, scale, zero, maxq):
@@ -147,9 +147,9 @@ class Quantizer(nn.Module):
         else:
             reference = reference.flatten().unsqueeze(0)
 
-        x = reference.to(torch.float16)
+        x = reference.to(torch.float32)
         if not torch.isfinite(x).all():
-            raise ValueError("PMQ parameters require weights representable in FP16")
+            raise ValueError("PMQ parameters require weights representable in FP32")
         maxq = self.maxq.to(w.device)
         if maxq == 1:
             scale, zero = binary_scale(x)
