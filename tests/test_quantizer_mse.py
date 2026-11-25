@@ -30,18 +30,18 @@ class QuantizerMseTest(unittest.TestCase):
                             quantizer.find_params(self.weights, weight=True)
                         if bits == 2:
                             expected_scale = torch.tensor(
-                                [4., 4 / 3, 8 / 3, 1.], dtype=torch.float32
+                                [4., 4 / 3, 8 / 3, 1.], dtype=torch.float16
                             ).reshape(-1, 1)
                             if symmetric:
-                                expected_scale = torch.tensor([16 / 3, 8 / 3, 16 / 3, 1.], dtype=torch.float32).reshape(-1, 1)
+                                expected_scale = torch.tensor([16 / 3, 8 / 3, 16 / 3, 1.], dtype=torch.float16).reshape(-1, 1)
                             expected_zero = torch.full_like(expected_scale, 2.) if symmetric else torch.tensor(
-                                [1., 0., 3., 0.], dtype=torch.float32
+                                [1., 0., 3., 0.], dtype=torch.float16
                             ).reshape(-1, 1)
                             expected_zero[-1] = 0
                             torch.testing.assert_close(quantizer.scale, expected_scale, rtol=0, atol=0)
                             torch.testing.assert_close(quantizer.zero, expected_zero, rtol=0, atol=0)
 
-    def test_default_search_covers_1_to_point21_and_keeps_fp32(self):
+    def test_default_search_covers_1_to_point21_and_keeps_fp16(self):
         from utils.quantizer_moe import normal_quantize
         for packed in (False, True):
             quantizer = Quantizer()
@@ -51,11 +51,11 @@ class QuantizerMseTest(unittest.TestCase):
             self.assertEqual(search.call_count, 80)
             first = search.call_args_list[0].args[1]
             last = search.call_args_list[-1].args[1]
-            self.assertEqual(first.dtype, torch.float32)
-            self.assertEqual(last.dtype, torch.float32)
-            torch.testing.assert_close(first[0], torch.tensor([4.], dtype=torch.float32), rtol=0, atol=0)
-            torch.testing.assert_close(last[0], torch.tensor([4 * .21], dtype=torch.float32), rtol=0, atol=0)
-            self.assertEqual(quantizer.scale.dtype, torch.float32)
+            self.assertEqual(first.dtype, torch.float16)
+            self.assertEqual(last.dtype, torch.float16)
+            torch.testing.assert_close(first[0], torch.tensor([4.], dtype=torch.float16), rtol=0, atol=0)
+            torch.testing.assert_close(last[0], torch.tensor([4 * .21], dtype=torch.float16), rtol=0, atol=0)
+            self.assertEqual(quantizer.scale.dtype, torch.float16)
             self.assertEqual(quantizer.scale[-1].item(), 1)
             self.assertEqual(quantizer.zero[-1].item(), 0)
             if packed:
