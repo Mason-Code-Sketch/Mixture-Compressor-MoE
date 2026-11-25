@@ -14,15 +14,15 @@ from pmq.gptq import TensorGPTQ
 from pmq.runtime import input_device, load_tokenizer
 from pmq.monitor import LOGGER, progress
 from pmq.layer_inputs import LayerInputs, can_replay_layers, can_capture_native_layers
-from utils.normal_quantizer import normal_quantize
+from pmq.rtn import normal_quantize
 
 
 def quantized_weights(
-    weights: Mapping[str, torch.Tensor], *, bit: int, group_size: int
+    weights: Mapping[str, torch.Tensor], *, bit: int, group_size: int, mcmoe_rules: bool = False
 ) -> dict[str, torch.Tensor]:
     """Create PMQ's per-projection normal-quantization candidate tensors."""
     return {
-        name: normal_quantize(weight, blocksize=group_size, wbit=int(bit))
+        name: normal_quantize(weight, blocksize=group_size, wbit=int(bit), mcmoe_rules=mcmoe_rules)
         for name, weight in weights.items()
     }
 
@@ -246,7 +246,7 @@ def _quantize_expert(
             states=states, name=f"{prefix}.w3"
         )
         down_inputs = _expert_down_inputs(
-            quantized,
+            original,
             inputs,
             mixtral=True,
             activation=module.experts[expert].act_fn,
@@ -268,7 +268,7 @@ def _quantize_expert(
                 states=states, name=f"{prefix}.{name}"
             )
         down_inputs = _expert_down_inputs(
-            quantized, inputs, mixtral=False, activation=module.experts[expert].act_fn
+            original, inputs, mixtral=False, activation=module.experts[expert].act_fn
         )
         quantized["down_proj"] = _quantize_matrix(
             original["down_proj"], down_inputs, bit=bit,
@@ -284,13 +284,12 @@ def _quantize_expert(
         original_gate_up, inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
         states=states, name=f"{prefix}.gate_up_proj"
     )
+    down_inputs = []
+    for batch in inputs:
+        projected = functional.linear(batch.to(original_gate_up.device), original_gate_up)
+        gate, up = projected.chunk(2, dim=-1)
+        down_inputs.append((module.experts.act_fn(gate) * up).detach().cpu())
     gate, up = quantized_gate_up.chunk(2, dim=0)
-    down_inputs = _expert_down_inputs(
-        {"gate_proj": gate, "up_proj": up},
-        inputs,
-        mixtral=False,
-        activation=module.experts.act_fn,
-    )
     quantized_down = _quantize_matrix(
         original_down, down_inputs, bit=bit, group_size=group_size, percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
         states=states, name=f"{prefix}.down_proj"
@@ -329,7 +328,7 @@ def _quantize_shared_expert(
     )
     shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
     down_inputs = _expert_down_inputs(
-        quantized,
+        original,
         hidden_batches,
         mixtral=False,
         activation=getattr(shared, "act_fn", functional.silu),
@@ -389,57 +388,62 @@ def apply_allocation(
         standard_linears = [linear for _name, linear in standard_named_linears]
         capture_options = ({"forward_sample": lambda sample: replay.forward(layer, sample),
                             "deduplicate_inputs": True} if replay is not None else {})
-        standard_inputs = _capture_many_inputs(model, standard_linears, gptq_inputs, device, **capture_options)
+        # Capture the untouched layer before committing any projection.
+        targets = standard_linears + ([module] if module is not None else [])
+        standard_inputs = _capture_many_inputs(model, targets, gptq_inputs, device, **capture_options)
+        hidden_batches = standard_inputs.pop(module) if module is not None else None
+        router_weight = None
         for name, linear in standard_named_linears:
             bit = router_bit if linear is router or name.endswith("shared_expert_gate") else standard_bit
             if bit >= 16:
                 continue
-            linear.weight.copy_(
-                _quantize_matrix(
-                    linear.weight,
-                    standard_inputs[linear],
-                    bit=bit,
+            replacement = _quantize_matrix(
+                linear.weight,
+                standard_inputs.pop(linear),
+                bit=bit,
+                group_size=group_size,
+                percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
+                states=states, name=f"model.layers.{layer_index}.{name}",
+            )
+            if linear is router:
+                router_weight = replacement
+            else:
+                linear.weight.copy_(replacement)
+            del replacement
+        del standard_inputs
+        if module is not None:
+            routing_indices = _cache_routing_indices(module, adapter, hidden_batches, model.config) if cache_routes else None
+            for expert in range(adapter.num_experts(module)):
+                key = (int(layer_index), expert)
+                if key not in allocation:
+                    raise KeyError(f"PMQ allocation omits routed expert {key}")
+                progress("QUANTIZE_EXPERT", expert + 1, adapter.num_experts(module), layer=layer_index, bit=int(allocation[key]))
+                _quantize_expert(
+                    module,
+                    adapter,
+                    hidden_batches,
+                    model.config,
+                    expert=expert,
+                    bit=int(allocation[key]),
                     group_size=group_size,
                     percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
-                    states=states, name=f"model.layers.{layer_index}.{name}",
+                    states=states, prefix=f"{module_names[id(module)]}.experts.{expert}",
+                    routing_indices=routing_indices,
                 )
-            )
-        del standard_inputs
-        if module is None:
-            if replay is not None and layer_index + 1 < len(layers):
-                replay.advance(layer)
-            continue
-        hidden_batches = _capture_inputs(model, module, gptq_inputs, device, **capture_options)
-        routing_indices = _cache_routing_indices(module, adapter, hidden_batches, model.config) if cache_routes else None
-        for expert in range(adapter.num_experts(module)):
-            key = (int(layer_index), expert)
-            if key not in allocation:
-                raise KeyError(f"PMQ allocation omits routed expert {key}")
-            progress("QUANTIZE_EXPERT", expert + 1, adapter.num_experts(module), layer=layer_index, bit=int(allocation[key]))
-            _quantize_expert(
+            del routing_indices
+            shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
+            _quantize_shared_expert(
                 module,
                 adapter,
                 hidden_batches,
-                model.config,
-                expert=expert,
-                bit=int(allocation[key]),
+                bit=shared_bit,
                 group_size=group_size,
                 percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
-                states=states, prefix=f"{module_names[id(module)]}.experts.{expert}",
-                routing_indices=routing_indices,
+                states=states, prefix=module_names.get(id(shared), ""),
             )
-        del routing_indices
-        shared = getattr(module, "shared_experts", None) or getattr(module, "shared_expert", None)
-        _quantize_shared_expert(
-            module,
-            adapter,
-            hidden_batches,
-            bit=shared_bit,
-            group_size=group_size,
-            percdamp=percdamp, mse=mse, mcmoe_rules=mcmoe_rules,
-            states=states, prefix=module_names.get(id(shared), ""),
-        )
-        del hidden_batches
+            del hidden_batches
+        if router_weight is not None:
+            router.weight.copy_(router_weight)
         if replay is not None and layer_index + 1 < len(layers):
             replay.advance(layer)
         progress("QUANTIZE_LAYER_COMPLETE", layer_index + 1, len(layers))

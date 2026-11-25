@@ -156,7 +156,7 @@ class PmqProtocolTest(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(quantized).all())
 
-    def test_pmq_parameter_solver_matches_original_fp16_quantizer(self):
+    def test_pmq_parameter_solver_matches_fp32_quantizer(self):
         from utils.quantizer_moe import Quantizer
         for dtype in (torch.float32, torch.bfloat16, torch.float16):
             for bits in (1, 2, 3, 4):
@@ -166,8 +166,8 @@ class PmqProtocolTest(unittest.TestCase):
                 native.configure(bits, perchannel=True, sym=False, mse=True, pack=True)
                 native.find_params(weight, weight=True)
                 scale, zero = _mcmoe_params(weight, bits)
-                self.assertEqual(scale.dtype, torch.float16)
-                self.assertEqual(zero.dtype, torch.float16)
+                self.assertEqual(scale.dtype, torch.float32)
+                self.assertEqual(zero.dtype, torch.float32)
                 torch.testing.assert_close(scale, native.scale.flatten(), rtol=0, atol=0)
                 torch.testing.assert_close(zero, native.zero.flatten(), rtol=0, atol=0)
 
@@ -202,11 +202,12 @@ class PmqProtocolTest(unittest.TestCase):
 
         self.assertEqual([block.numel() for block in blocks], [2048, 2048])
 
-    def test_all_four_protocols_use_original_fp16_weights(self):
-        configs = list((Path(__file__).parents[1] / "configs").glob("*.yaml"))
-        self.assertEqual(len(configs), 4)
+    def test_all_four_protocols_load_bf16_weights(self):
+        configs = [Path(__file__).parents[1] / "configs" / name for name in (
+            "deepseek-v2-lite.yaml", "qwen1.5-moe-a2.7b.yaml", "qwen3-30b-a3b.yaml",
+            "mixtral-8x7b-v0.1.yaml")]
         for path in configs:
-            self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "float16", path)
+            self.assertEqual(yaml.safe_load(path.read_text())["model"]["dtype"], "bfloat16", path)
 
     def test_wt2_calibration_uses_spaces_and_ppl_keeps_double_newlines(self):
         from pmq.data import calibration_inputs

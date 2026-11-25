@@ -37,7 +37,7 @@ def _mcmoe_params(
     mse: bool = True,
     mcmoe_rules: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Solve the selected grid with PMQ native FP16 parameter arithmetic."""
+    """Solve the selected grid with FP32 parameter arithmetic."""
     quantizer = Quantizer(mcmoe_rules=mcmoe_rules)
     quantizer.configure(bits, perchannel=True, sym=False, mse=mse, pack=True)
     quantizer.find_params(weight, weight=True)
@@ -77,7 +77,7 @@ class TensorGPTQ:
         next_samples = self.samples + batch_size
         self.hessian.mul_(self.samples / next_samples)
         self.samples = next_samples
-        rows.mul_(math.sqrt(2.0 / self.samples))
+        rows = rows * math.sqrt(2.0 / self.samples)
         self.hessian.add_(rows.matmul(rows.transpose(0, 1)))
 
     @torch.no_grad()

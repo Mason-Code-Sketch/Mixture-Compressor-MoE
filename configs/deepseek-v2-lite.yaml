@@ -2,7 +2,7 @@ model:
   name: deepseek-ai/DeepSeek-V2-Lite
   id: DeepSeek-V2-Lite
   architecture: deepseek_moe
-  dtype: float16
+  dtype: bfloat16
   attn_implementation: eager
 
 

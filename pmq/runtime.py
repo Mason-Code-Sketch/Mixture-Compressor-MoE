@@ -18,7 +18,7 @@ def load_model_config(model_path):
 
 def load_model(protocol):
     settings = protocol.data["model"]
-    dtype_name = str(settings.get("dtype", "float16"))
+    dtype_name = str(settings.get("dtype", "bfloat16"))
     dtype = getattr(torch, dtype_name)
     kwargs = {
         "torch_dtype": dtype,

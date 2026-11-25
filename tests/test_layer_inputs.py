@@ -39,7 +39,7 @@ def test_sequential_gptq_every_capture_packed_state_and_logits_exact(monkeypatch
     quant.apply_allocation(reference, adapter, allocation, protocol=protocol(), seed=0, layer_replay=False, routing_cache=False)
     expected = captures[:];captures.clear()
     quant.apply_allocation(model, adapter, allocation, protocol=protocol(), seed=0)
-    assert len(expected) == len(captures) == 6
+    assert len(expected) == len(captures) == len(model.model.layers)
     for old, new in zip(expected, captures):
         for before, after in zip(old, new):
             for a, b in zip(before, after):assert torch.equal(a, b)
