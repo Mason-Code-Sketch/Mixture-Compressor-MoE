@@ -37,7 +37,7 @@ def _mcmoe_params(
     mse: bool = True,
     mcmoe_rules: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Solve the selected grid with FP32 parameter arithmetic."""
+    """Solve the selected grid with FP16 parameter arithmetic."""
     quantizer = Quantizer(mcmoe_rules=mcmoe_rules)
     quantizer.configure(bits, perchannel=True, sym=False, mse=mse, pack=True)
     quantizer.find_params(weight, weight=True)

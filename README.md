@@ -304,6 +304,10 @@ python pmq_runner.py --config configs/qwen3-30b-a3b.yaml --phase ppl --average-b
 python pmq_runner.py --config configs/qwen3-30b-a3b.yaml --phase zeroshot --average-bit 2.5
 ```
 
+GPTQ uses FP32 Hessians and working weights. It solves scale and zero in FP16,
+uses those grids for layer-to-layer calibration, and stores them in FP16. Decoding uses FP32 arithmetic for
+both the FP16 grids and earlier FP32 checkpoints.
+
 The native runner keeps `experts_act_frequency.pkl`, `experts_act_weight.pkl`
 and `experts_quant_loss.pkl` under the model output directory. Allocations use
 `experts_mixture_bit_selection/experts_mixture_bitwidth_combination_avg<bit>bit.pkl`;

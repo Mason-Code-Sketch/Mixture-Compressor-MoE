@@ -40,8 +40,8 @@ def pack_matrix(codes, scale, zero, *, bits, group_size, dtype):
     return {
         "W_q": packed.detach().cpu(),
         "meta": {"nbits": bits, "group_size": group_size, "shape": (rows, columns),
-                 "scale": scale.reshape(-1, 1).float().cpu(),
-                 "zero": zero.reshape(-1, 1).float().cpu(),
+                 "scale": scale.reshape(-1, 1).to(device="cpu", dtype=torch.float16),
+                 "zero": zero.reshape(-1, 1).to(device="cpu", dtype=torch.float16),
                  "axis": 1, "packing": packing, "compute_dtype": dtype,
                  "view_as_float": False, "quant_scale": False, "quant_zero": False,
                  "pmq_groups": count, "pmq_format_version": 1},
@@ -57,7 +57,7 @@ class PackedLinear(nn.Module):
         self._meta = dict(state["meta"])
         self.compute_dtype = dtype or self._meta["compute_dtype"]
         for key in ("scale", "zero"):
-            self.register_buffer(key, self._meta.pop(key).to(device=device, dtype=torch.float32))
+            self.register_buffer(key, self._meta.pop(key).to(device=device))
         self.register_buffer("W_q", state["W_q"].to(device=device))
         self.register_buffer("bias", None if state.get("bias") is None else state["bias"].to(device=device, dtype=self.compute_dtype))
         self.out_features, self.in_features = self.meta["shape"]

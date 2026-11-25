@@ -99,3 +99,4 @@ def test_standalone_mse_reaches_every_quantized_projection(kind, mse):
         apply_allocation(model, adapter, allocation, protocol=protocol, seed=0)
     assert seen and all(flag is mse for flag in seen)
     assert bool(search.call_count) is mse
+    assert all(arg.dtype == torch.float16 for call in search.call_args_list for arg in call.args[:3])

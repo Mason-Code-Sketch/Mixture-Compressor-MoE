@@ -156,7 +156,7 @@ class PmqProtocolTest(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(quantized).all())
 
-    def test_pmq_parameter_solver_matches_fp32_quantizer(self):
+    def test_pmq_parameter_solver_matches_fp16_quantizer(self):
         from utils.quantizer_moe import Quantizer
         for dtype in (torch.float32, torch.bfloat16, torch.float16):
             for bits in (1, 2, 3, 4):
@@ -166,10 +166,16 @@ class PmqProtocolTest(unittest.TestCase):
                 native.configure(bits, perchannel=True, sym=False, mse=True, pack=True)
                 native.find_params(weight, weight=True)
                 scale, zero = _mcmoe_params(weight, bits)
-                self.assertEqual(scale.dtype, torch.float32)
-                self.assertEqual(zero.dtype, torch.float32)
+                self.assertEqual(scale.dtype, torch.float16)
+                self.assertEqual(zero.dtype, torch.float16)
                 torch.testing.assert_close(scale, native.scale.flatten(), rtol=0, atol=0)
                 torch.testing.assert_close(zero, native.zero.flatten(), rtol=0, atol=0)
+
+    def test_grid_search_rounds_during_fp16_solve(self):
+        weight = torch.tensor([[-1.13, 2.31]])
+        scale, zero = _mcmoe_params(weight, 2, mse=False)
+        self.assertEqual(scale.item(), 1.1474609375)
+        self.assertEqual(zero.item(), 0.98486328125)
 
     def test_tensor_gptq_keeps_fp32_compensation_weights(self):
         gptq = TensorGPTQ(torch.randn(2, 4, dtype=torch.bfloat16), bits=2)

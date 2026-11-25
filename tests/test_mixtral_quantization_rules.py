@@ -8,7 +8,7 @@ import yaml
 
 from pmq.gptq import TensorGPTQ, _mcmoe_params, _quantize_uniform
 from pmq.hessian import inverse_hessian_factor
-from pmq.packed import PackedLinear
+from pmq.packed import PackedLinear, pack_matrix
 from utils.quantizer_moe import Quantizer
 
 
@@ -42,9 +42,27 @@ def test_low_bit_block_and_cross_block_compensation(bits, dtype):
                 remaining[:, col:start+4] -= error[:, None] @ factor[col:col+1, col:start+4]
                 errors[:, col-start] = error
             remaining[:, start+4:] -= errors @ factor[start:start+4, start+4:]
-    actual = solver.quantize(group_size=4, percdamp=.01)
+    with patch("pmq.gptq.pack_matrix", wraps=pack_matrix) as pack:
+        actual = solver.quantize(group_size=4, percdamp=.01)
     torch.testing.assert_close(actual, expected.to(dtype), rtol=0, atol=0)
-    assert torch.equal(PackedLinear(solver.packed_state).dequantize(), actual)
+
+    codes, scale, zero = pack.call_args.args
+    assert scale.dtype == zero.dtype == torch.float16
+    index = torch.arange(w.shape[1]) // 4
+    state = solver.packed_state
+    saved = PackedLinear(state)
+    assert saved.scale.dtype == saved.zero.dtype == torch.float16
+    stored = (codes.float() - zero.float()[:, index]) * scale.float()[:, index]
+    torch.testing.assert_close(saved.to("cpu").dequantize(), stored.to(dtype), rtol=0, atol=0)
+    torch.testing.assert_close(saved.dequantize(), actual, rtol=0, atol=0)
+    # A historical FP32 grid may contain values that cannot round-trip through FP16.
+    legacy_scale = scale.float() + 1e-5
+    legacy_zero = zero.float() + 2e-5
+    legacy_meta = dict(state["meta"], scale=legacy_scale.reshape(-1, 1), zero=legacy_zero.reshape(-1, 1))
+    legacy = PackedLinear(dict(state, meta=legacy_meta))
+    assert legacy.scale.dtype == legacy.zero.dtype == torch.float32
+    expected_legacy = (codes.float() - legacy_zero[:, index]) * legacy_scale[:, index]
+    torch.testing.assert_close(legacy.dequantize(), expected_legacy.to(dtype), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4])

@@ -111,6 +111,9 @@ def test_quantized_checkpoint_reload_and_grouped_logits(kind, dtype, tmp_path, d
         def save_pretrained(self, path):
             Path(path, "tokenizer_config.json").write_text("{}")
     save_packed_model(model, Tokenizer(), tmp_path)
+    state = torch.load(tmp_path / "qmodel.pt", weights_only=False, mmap=True)
+    grids = [entry["meta"] for entry in state.values() if "W_q" in entry]
+    assert grids and all(grid[k].dtype == torch.float16 for grid in grids for k in ("scale", "zero"))
     digest = sha256_file(tmp_path / "qmodel.pt")
     with patch("torch.load", wraps=torch.load) as checkpoint_load:
         reloaded = load_packed_model(tmp_path, device_map=device)
